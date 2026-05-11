@@ -2,6 +2,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Load .env values for runtime options (auth, host/port, etc.)
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  set -a
+  source "${ROOT_DIR}/.env"
+  set +a
+fi
+
 HOST="${GEMMA4_API_HOST:-0.0.0.0}"
 PORT="${GEMMA4_API_PORT:-44448}"
 

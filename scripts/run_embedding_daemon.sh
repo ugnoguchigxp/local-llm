@@ -3,6 +3,13 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EMBED_DIR="${ROOT_DIR}/embedding"
+
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  set -a
+  source "${ROOT_DIR}/.env"
+  set +a
+fi
+
 HOST="${EMBEDDING_API_HOST:-127.0.0.1}"
 PORT="${EMBEDDING_API_PORT:-44512}"
 MODEL_DIR="${EMBEDDING_MODEL_DIR:-${EMBED_DIR}/models/multilingual-e5-small}"
