@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "e5embed-local"
+version = "0.1.0"
+description = "Local CLI for intfloat/multilingual-e5-small"
+requires-python = ">=3.9"
+dependencies = [
+  "sentence-transformers>=3.0.0",
+  "transformers>=4.40.0",
+  "huggingface-hub>=0.23.0",
+  "torch>=2.2.0"
+]
+
+[project.scripts]
+e5embed = "e5embed.cli:main"
+embed = "e5embed.simple_cli:main"
+e5embed-daemon = "e5embed.daemon:main"
+
+[tool.setuptools]
+packages = ["e5embed"]

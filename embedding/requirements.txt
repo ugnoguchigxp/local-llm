@@ -1,0 +1,5 @@
+sentence-transformers>=3.0.0
+transformers>=4.40.0
+huggingface-hub>=0.23.0
+torch>=2.2.0
+pytest>=8.0.0

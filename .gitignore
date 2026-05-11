@@ -1,0 +1,105 @@
+# OS files
+.DS_Store
+Thumbs.db
+Icon?
+.AppleDouble
+.LSOverride
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.test
+
+# ML / Heavy data
+models/
+*.bin
+*.pt
+*.pth
+*.ckpt
+*.mlmodel
+*.h5
+*.weights
+*.onnx
+*.safetensors
+*.gguf
+*.llamafile
+.cache/
+data/
+embeddings_db/
+
+# Sessions / Local Data
+sessions/
+.localLlm/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+
+# Linting / Static Analysis
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.eslintcache/
+
+# Notebooks
+.ipynb_checkpoints
+
+# Logs
+*.log
+logs/
+.debug/
+
+# Temp / Debug
+scratch/
+tmp/
+temp/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+.project
+.pydevproject
+.settings/
+
