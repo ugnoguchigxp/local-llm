@@ -1,20 +1,23 @@
-# Gemma 4 Local Runtime (MLX + Ollama + Bonsai)
+# Local LLM Runtime (Gemma 4 + Qwen 2.5 + Bonsai + Embedding)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey.svg)](https://developer.apple.com/metal/tensorflow-plugin/)
 
-このプロジェクトは、Apple Silicon (MLX) や Ollama を活用して、高性能な LLM ローカル実行環境および自律型エージェント機能を提供します。Zed や VSCode (Continue) などの IDE から利用可能な OpenAI 互換 API サーバーを内蔵しており、ローカル完結でセキュアかつ高速な開発体験を実現します。
+このプロジェクトは、Apple Silicon (MLX) や Ollama を活用して、高性能な LLM ローカル実行環境、埋め込み (Embedding) サーバー、および自律型エージェント機能を提供します。Zed や VSCode (Continue) などの IDE から利用可能な OpenAI 互換 API を内蔵しており、完全ローカルでセキュアな RAG (Retrieval-Augmented Generation) 環境を構築可能です。
 
 ---
 
 ## ✨ 主な特徴
 
-- **マルチバックエンド対応**: Apple Silicon に最適化された `MLX` と、汎用的な `Ollama` をシームレスに切り替え。
-- **高性能モデルのサポート**: Gemma 4 (E4B), Bonsai, Qwen 2.5 等の最新モデルに対応。
+- **マルチバックエンド対応**: `MLX` (Apple Silicon 最適化), `Ollama`, `Bonsai` をシームレスに切り替え。
+- **最新モデルのフルサポート**:
+  - **Gemma 4 (E4B)**: MTP 推論による高速生成。
+  - **Qwen 2.5**: 推論性能に優れた Qwen シリーズを MLX バックエンドで実行。
+  - **Bonsai**: 極小量子化 (2-bit) でも高い性能を発揮する 8B モデル。
+- **ローカル Embedding サーバー**: `multilingual-e5-small` を使用した高性能な埋め込み API。
 - **自律型エージェント (MCP)**: Web検索 (`Brave Search`) やウェブスクレイピング機能を標準搭載。
-- **OpenAI 互換 API**: `/v1/chat/completions` エンドポイントを提供し、既存ツールから即座に利用可能。
-- **MTP 推論 (Speculative Decoding)**: Gemma 4 等での高速なトークン生成。
+- **OpenAI 互換 API**: Chat Completions (`/v1/chat/completions`) および Embeddings (`/v1/embeddings`) を提供。
 - **セッション管理**: 会話履歴を自動保存し、CLI からの継続的な対話が可能。
 
 ---
@@ -41,17 +44,11 @@ cd localLlm
 ### 2. 仮想環境と依存関係のインストール
 
 ```bash
-# セットアップスクリプトの実行（推奨）
+# 全体セットアップスクリプトの実行（推奨）
 bash scripts/setup.sh
 ```
 
-または手動で：
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+このスクリプトは、ルートディレクトリと `embedding/` ディレクトリの両方の仮想環境をセットアップします。
 
 ### 3. 環境変数の設定
 
@@ -59,57 +56,55 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-`.env` ファイルを開き、必要に応じて設定を調整してください：
-- `BRAVE_SEARCH_API_KEY`: Web検索機能を有効にする場合に設定。
-- `GEMMA4_MODEL`: 使用する MLX モデルのパスまたは HuggingFace ID。
+`.env` 内の `BRAVE_SEARCH_API_KEY` を設定すると、Web検索ツールが有効になります。
 
 ---
 
 ## 🛠 使い方と得られる結果
 
-### 1. CLI での対話 (Gemma 4)
+### 1. CLI での対話 (各モデル)
 
-最も手軽にモデルと対話する方法です。初回実行時にモデルが自動ダウンロードされます。
+使用したいモデルに合わせてスクリプトを使い分けます。初回実行時にモデルが自動ダウンロードされます。
 
 ```bash
-./scripts/gemma4 "Rustの所有権について教えて"
+# Gemma 4 を使用
+./scripts/gemma4 "こんにちは"
+
+# Qwen 2.5 を使用
+./scripts/qwen "複雑な数学の問題を解いて"
+
+# Bonsai (8B) を使用
+./scripts/bonsai "自己紹介してください"
 ```
 
-**得られる結果 (JSON出力):**
-デフォルトでは、他のプログラムから扱いやすいようにセッションIDを含む JSON が返ります。
-```json
-{
-  "session_id": "sess_12345",
-  "response": "Rustの所有権（Ownership）は、メモリ安全性を保証するための主要な概念です...",
-  "model": "mlx-community/gemma-4-e4b-it-4bit",
-  "usage": { "prompt_tokens": 15, "completion_tokens": 120 }
-}
-```
+### 2. OpenAI 互換 API サーバー (Chat)
 
-テキストのみが必要な場合：
-```bash
-./scripts/gemma4 --prompt "挨拶して" --output text
-```
-
-### 2. OpenAI 互換 API サーバーの起動
-
-Zed や VSCode などの IDE から利用する場合に起動します。
+IDE (Zed, VSCode 等) から利用する場合に起動します。
 
 ```bash
 ./scripts/run_openai_api.sh
 ```
+- **Port**: `44448`
+- **Endpoint**: `http://localhost:44448/v1/chat/completions`
 
-起動後、`http://localhost:44448/v1/chat/completions` でリクエストを受け付けます。
+### 3. Embedding サーバーの起動
 
-### 3. 自律型エージェント (MCP Tools)
+RAG や文書検索などのために埋め込みベクトルを生成する場合に起動します。
+
+```bash
+./scripts/run_embedding_daemon.sh
+```
+- **Port**: `44512`
+- **Model**: `multilingual-e5-small` (デフォルト)
+- **Endpoint**: `http://localhost:44512/v1/embeddings`
+
+### 4. 自律型エージェント (MCP Tools)
 
 Brave Search 等のツールを使用するエージェント機能を起動します。
 
 ```bash
 python mcp/tools_server.py
 ```
-
-Claude Desktop や Gnosis などの MCP クライアントに設定することで、LLM が必要に応じてウェブ検索を行い、最新の情報に基づいた回答を生成します。
 
 ---
 
@@ -118,29 +113,22 @@ Claude Desktop や Gnosis などの MCP クライアントに設定すること�
 | 変数名 | 説明 | 既定値 |
 | :--- | :--- | :--- |
 | `GEMMA4_MODEL` | MLX で使用する Gemma 4 モデル | `mlx-community/gemma-4-e4b-it-4bit` |
-| `GEMMA4_API_PORT` | API サーバーのポート番号 | `44448` |
-| `GEMMA4_MTP_ENABLED` | MTP (高速推論) を有効にするか | `false` |
+| `QWEN_MODEL` | MLX で使用する Qwen モデル | `mlx-community/Qwen2.5-14B-Instruct-4bit` |
+| `GEMMA4_API_PORT` | Chat API サーバーのポート | `44448` |
+| `EMBEDDING_API_PORT` | Embedding API のポート | `44512` |
 | `BRAVE_SEARCH_API_KEY` | Brave Search API キー | (空) |
-| `LOCAL_LLM_CONTEXT_WINDOW` | コンテキストウィンドウサイズ | `131072` |
 
 ---
 
 ## 🔍 トラブルシューティング
 
-### MLX が Metal 初期化でエラーになる
-Sandbox 環境や一部のターミナル環境で Metal の初期化に失敗する場合があります。
-```bash
-# 安全停止をバイパスして強制実行する場合
-LOCAL_LLM_ALLOW_MLX_IN_SEATBELT=1 ./scripts/gemma4 "hello"
-```
-
-### セットアップの確認
-現在の環境が正しく設定されているか確認するには：
+### 環境診断
+現在のセットアップが正しいか確認するには：
 ```bash
 ./scripts/doctor
 ```
 
-### 動作ステータスの確認
+### ステータス確認
 ```bash
 ./scripts/status
 ```
@@ -149,12 +137,12 @@ LOCAL_LLM_ALLOW_MLX_IN_SEATBELT=1 ./scripts/gemma4 "hello"
 
 ## 📂 ディレクトリ構成
 
-- `scripts/`: 各種モデル実行用ショートカット、管理用スクリプト。
-- `api/`: FastAPI による OpenAI 互換 API の実装。
-- `core/`: 推論ロジック、セッション管理のコア。
-- `backends/`: MLX, Ollama, Llama.cpp 等の抽象化層。
-- `mcp/`: Model Context Protocol サーバーの実装。
-- `tools.py`: Web検索、スクレイピング等のツール実装。
+- `scripts/`: 各種モデル実行 (gemma4, qwen, bonsai) および API 起動スクリプト。
+- `embedding/`: E5 埋め込みサーバー専用のソースコードと仮想環境。
+- `api/`: FastAPI による OpenAI 互換 Chat API。
+- `core/`: 推論・セッション管理のコアロジック。
+- `backends/`: MLX, Ollama 等のバックエンド抽象化層。
+- `mcp/`: Model Context Protocol サーバー。
 
 ---
 
