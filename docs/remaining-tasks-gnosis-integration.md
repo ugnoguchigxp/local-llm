@@ -1,6 +1,6 @@
 # local-llm 移行 残タスク指示書（Gnosis 疎通確認付き）
 
-最終更新: 2026-05-11 19:33:30 JST
+最終更新: 2026-05-12 00:12:00 JST
 
 ## 1. 目的
 
@@ -72,25 +72,25 @@ PY
 
 ### P0: local-llm 単体運用の完成
 
-- [ ] `launchd/` 配下に `com.localLlm.llm.plist` / `com.localLlm.embedding.plist` を追加。
-- [ ] `local-llm` 側で `doctor` / `status` 相当の自己診断コマンドを提供。
-- [ ] API 認証の正式化（`LOCAL_LLM_REQUIRE_AUTH`, `LOCAL_LLM_ACCESS_TOKEN`）と embedding 側統一。
-- [ ] ログ出力先を Gnosis 配下依存から切り離し（`services/local-llm/.debug` 参照の解消）。
+- [x] `launchd/` 配下に `com.localLlm.llm.plist` / `com.localLlm.embedding.plist` を追加。
+- [x] `local-llm` 側で `doctor` / `status` 相当の自己診断コマンドを提供。
+- [x] API 認証の正式化（`LOCAL_LLM_REQUIRE_AUTH`, `LOCAL_LLM_ACCESS_TOKEN`）と embedding 側統一。
+- [x] ログ出力先を Gnosis 配下依存から切り離し（`services/local-llm/.debug` 参照の解消）。
 
 ### P1: Gnosis の外部依存化（参照先切替）
 
-- [ ] `gnosis/src/constants.ts` の `services/local-llm` / `services/embedding` 既定パス依存を外す。
-- [ ] `gnosis/src/scripts/local-llm-cli.ts` の repo 内 Python 実行前提を外部ランタイム呼び出しへ置換。
-- [ ] `gnosis/package.json` の `local-llm:daemon` / `embedding:daemon` を削除または外部案内へ変更。
-- [ ] `gnosis/scripts/setup-automation.sh` と `scripts/automation/com.gnosis.*` から local daemon 起動責務を除去。
-- [ ] `gnosis/scripts/bootstrap-local-llm.ts` を外部 runtime 検出・案内モードへ縮小。
-- [ ] `LOCAL_LLM_API_BASE_URL`, `LOCAL_LLM_API_KEY_ENV`, `GNOSIS_EMBED_DAEMON_URL`, `GNOSIS_EMBED_API_KEY_ENV` の運用ドキュメントを更新。
+- [x] `gnosis/src/constants.ts` の `services/local-llm` / `services/embedding` 既定パス依存を外す。
+- [x] `gnosis/src/scripts/local-llm-cli.ts` の repo 内 Python 実行前提を外部ランタイム呼び出しへ置換。
+- [x] `gnosis/package.json` の `local-llm:daemon` / `embedding:daemon` を削除または外部案内へ変更。
+- [x] `gnosis/scripts/setup-automation.sh` と `scripts/automation/com.gnosis.*` から local daemon 起動責務を除去。
+- [x] `gnosis/scripts/bootstrap-local-llm.ts` を外部 runtime 検出・案内モードへ縮小。
+- [x] `LOCAL_LLM_API_BASE_URL`, `LOCAL_LLM_API_KEY_ENV`, `GNOSIS_EMBED_DAEMON_URL`, `GNOSIS_EMBED_API_KEY_ENV` の運用ドキュメントを更新。
 
 ### P2: 削除フェーズ（起動確認後にのみ実施）
 
-- [ ] `gnosis/services/local-llm` 削除。
-- [ ] `gnosis/services/embedding` 削除。
-- [ ] `gnosis` 側の不要 wrapper/script を削除し、README/運用手順を分離後仕様に同期。
+- [x] `gnosis/services/local-llm` 削除。
+- [x] `gnosis/services/embedding` 削除。
+- [x] `gnosis` 側の不要 wrapper/script を削除し、README/運用手順を分離後仕様に同期。
 
 ## 5. 削除開始のゲート条件
 
@@ -109,4 +109,3 @@ PY
 3. Gnosis 側の verify/test 修正
 4. ゲート条件を再実行
 5. P2 削除
-

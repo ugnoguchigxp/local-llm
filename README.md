@@ -1,34 +1,31 @@
-# Local LLM Runtime (Gemma 4 + Qwen 2.5 + Bonsai + Embedding)
+# Local LLM Runtime (Gemma 4 + Qwen 3.6 + Bonsai + Embedding)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey.svg)](https://developer.apple.com/metal/tensorflow-plugin/)
 
-このプロジェクトは、Apple Silicon (MLX) や Ollama を活用して、高性能な LLM ローカル実行環境、埋め込み (Embedding) サーバー、および自律型エージェント機能を提供します。Zed や VSCode (Continue) などの IDE から利用可能な OpenAI 互換 API を内蔵しており、完全ローカルでセキュアな RAG (Retrieval-Augmented Generation) 環境を構築可能です。
+このプロジェクトは、Apple Silicon (MLX) や Ollama を活用して、高性能な LLM ローカル実行環境、埋め込み (Embedding) サーバー、および自律型エージェント機能を提供します。M4 Mac 等の最新ハードウェアに最適化されたモデル構成を採用しており、完全ローカルでセキュアな RAG 環境を構築可能です。
 
 ---
 
 ## ✨ 主な特徴
 
 - **マルチバックエンド対応**: `MLX` (Apple Silicon 最適化), `Ollama`, `Bonsai` をシームレスに切り替え。
-- **最新モデルのフルサポート**:
-  - **Gemma 4 (E4B)**: MTP 推論による高速生成。
-  - **Qwen 2.5**: 推論性能に優れた Qwen シリーズを MLX バックエンドで実行。
-  - **Bonsai**: 極小量子化 (2-bit) でも高い性能を発揮する 8B モデル。
-- **ローカル Embedding サーバー**: `multilingual-e5-small` を使用した高性能な埋め込み API。
+- **最新・最適化モデルのサポート (May 2026)**:
+  - **Gemma 4 (E4B)**: Google の最新軽量モデル。MTP 推論による高速生成に対応。
+  - **Qwen 3.6 (14B)**: コーディングやエージェントタスクに最適な最新 Qwen。標準的な M4 Mac (16GB RAM) でも軽快に動作する 14B モデルを採用。
+  - **Bonsai**: 2-bit 量子化でも高い知能を維持する極限効率モデル。
+- **ローカル Embedding サーバー**: `multilingual-e5-small` による高性能な埋め込み API。
 - **自律型エージェント (MCP)**: Web検索 (`Brave Search`) やウェブスクレイピング機能を標準搭載。
-- **OpenAI 互換 API**: Chat Completions (`/v1/chat/completions`) および Embeddings (`/v1/embeddings`) を提供。
-- **セッション管理**: 会話履歴を自動保存し、CLI からの継続的な対話が可能。
+- **OpenAI 互換 API**: Chat Completions および Embeddings を提供。
 
 ---
 
 ## 💻 ハードウェア要件
 
 - **推奨**: Apple Silicon (M1/M2/M3/M4) 搭載の Mac
-  - MLX バックエンドの性能を最大限に引き出すために必要です。
-  - メモリ (Unified Memory): 16GB 以上推奨（8GB でも動作しますが、量子化モデルを推奨）。
-- **その他**: Intel Mac や Linux/Windows
-  - Ollama バックエンド経由での利用が可能です。
+  - **M4 Mac 推奨**: Qwen 3.6 MoE モデルなどの最新アーキテクチャを快適に動作させるために最適です。
+  - メモリ (Unified Memory): 16GB 以上推奨（32GB 以上で Qwen 3.6 35B がより快適に動作します）。
 
 ---
 
@@ -48,62 +45,39 @@ cd localLlm
 bash scripts/setup.sh
 ```
 
-このスクリプトは、ルートディレクトリと `embedding/` ディレクトリの両方の仮想環境をセットアップします。
-
 ### 3. 環境変数の設定
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` 内の `BRAVE_SEARCH_API_KEY` を設定すると、Web検索ツールが有効になります。
-
 ---
 
 ## 🛠 使い方と得られる結果
 
-### 1. CLI での対話 (各モデル)
+### 1. CLI での対話
 
-使用したいモデルに合わせてスクリプトを使い分けます。初回実行時にモデルが自動ダウンロードされます。
+最新の量子化済み MLX モデルを即座に試せます。
 
 ```bash
-# Gemma 4 を使用
+# Gemma 4 を使用 (高速)
 ./scripts/gemma4 "こんにちは"
 
-# Qwen 2.5 を使用
-./scripts/qwen "複雑な数学の問題を解いて"
+# Qwen 3.6 を使用 (高度なコーディング・推論)
+./scripts/qwen "複雑な Rust コードを書いて"
 
-# Bonsai (8B) を使用
+# Bonsai を使用 (低メモリ消費)
 ./scripts/bonsai "自己紹介してください"
 ```
 
-### 2. OpenAI 互換 API サーバー (Chat)
-
-IDE (Zed, VSCode 等) から利用する場合に起動します。
+### 2. API サーバーの起動
 
 ```bash
+# Chat API (Port: 44448)
 ./scripts/run_openai_api.sh
-```
-- **Port**: `44448`
-- **Endpoint**: `http://localhost:44448/v1/chat/completions`
 
-### 3. Embedding サーバーの起動
-
-RAG や文書検索などのために埋め込みベクトルを生成する場合に起動します。
-
-```bash
+# Embedding API (Port: 44512)
 ./scripts/run_embedding_daemon.sh
-```
-- **Port**: `44512`
-- **Model**: `multilingual-e5-small` (デフォルト)
-- **Endpoint**: `http://localhost:44512/v1/embeddings`
-
-### 4. 自律型エージェント (MCP Tools)
-
-Brave Search 等のツールを使用するエージェント機能を起動します。
-
-```bash
-python mcp/tools_server.py
 ```
 
 ---
@@ -112,18 +86,16 @@ python mcp/tools_server.py
 
 | 変数名 | 説明 | 既定値 |
 | :--- | :--- | :--- |
-| `GEMMA4_MODEL` | MLX で使用する Gemma 4 モデル | `mlx-community/gemma-4-e4b-it-4bit` |
-| `QWEN_MODEL` | MLX で使用する Qwen モデル | `mlx-community/Qwen2.5-14B-Instruct-4bit` |
+| `GEMMA4_MODEL` | MLX で使用する Gemma モデル | `mlx-community/gemma-4-e4b-it-4bit` |
+| `QWEN_MODEL` | MLX で使用する Qwen モデル | `mlx-community/Qwen3.6-14B-4bit` |
 | `GEMMA4_API_PORT` | Chat API サーバーのポート | `44448` |
 | `EMBEDDING_API_PORT` | Embedding API のポート | `44512` |
-| `BRAVE_SEARCH_API_KEY` | Brave Search API キー | (空) |
 
 ---
 
 ## 🔍 トラブルシューティング
 
 ### 環境診断
-現在のセットアップが正しいか確認するには：
 ```bash
 ./scripts/doctor
 ```
@@ -132,17 +104,6 @@ python mcp/tools_server.py
 ```bash
 ./scripts/status
 ```
-
----
-
-## 📂 ディレクトリ構成
-
-- `scripts/`: 各種モデル実行 (gemma4, qwen, bonsai) および API 起動スクリプト。
-- `embedding/`: E5 埋め込みサーバー専用のソースコードと仮想環境。
-- `api/`: FastAPI による OpenAI 互換 Chat API。
-- `core/`: 推論・セッション管理のコアロジック。
-- `backends/`: MLX, Ollama 等のバックエンド抽象化層。
-- `mcp/`: Model Context Protocol サーバー。
 
 ---
 

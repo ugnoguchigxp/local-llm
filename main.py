@@ -196,8 +196,8 @@ async def main():
             prefill_step_size=_normalize_optional_positive_int(args.prefill_step_size),
         )
         if args.backend == "qwen":
-            model_path = args.model or "mlx-community/Qwen3-14B-4bit"
-        else:
+            model_path = args.model or os.getenv("QWEN_MODEL", "mlx-community/Qwen3.6-14B-4bit")
+        elif args.backend == "mlx":
             model_path = args.model or "mlx-community/gemma-4-e4b-it-4bit"
     elif args.backend == "ollama":
         from backends.ollama import OllamaBackend
@@ -372,7 +372,7 @@ async def main():
 
     backend_labels = {
         "mlx": "Gemma 4",
-        "qwen": "Qwen 2.5 Coder",
+        "qwen": "Qwen 3.6",
         "bonsai": "Bonsai",
         "ollama": "Ollama",
         "mock": "Mock",

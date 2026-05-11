@@ -72,6 +72,8 @@ def request_json(
         except json.JSONDecodeError:
             parsed = payload
         return exc.code, parsed
+    except urllib.error.URLError as exc:
+        return 0, str(exc.reason)
 
 
 def check_auth_config() -> CheckResult:
