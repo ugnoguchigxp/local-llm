@@ -18,11 +18,23 @@ class ChatTool(BaseModel):
     function: FunctionDefinition
 
 
+class FunctionToolCall(BaseModel):
+    name: str
+    arguments: str
+
+
+class ToolCall(BaseModel):
+    id: str
+    type: Literal["function"] = "function"
+    function: FunctionToolCall
+
+
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     content: str | list[dict[str, Any]] | None = ""
     name: str | None = None
     tool_call_id: str | None = None
+    tool_calls: list[ToolCall] | None = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -32,18 +44,20 @@ class ChatCompletionRequest(BaseModel):
     temperature: float = 0.0
     max_tokens: int = 1024
     tools: list[ChatTool] | None = None
+    tool_choice: str | dict[str, Any] | None = None
     priority: Literal["high", "normal", "low"] = "normal"
 
 
 class ResponseMessage(BaseModel):
     role: Literal["assistant"] = "assistant"
-    content: str
+    content: str | None = None
+    tool_calls: list[ToolCall] | None = None
 
 
 class Choice(BaseModel):
     index: int
     message: ResponseMessage
-    finish_reason: Literal["stop"] = "stop"
+    finish_reason: Literal["stop", "tool_calls", "length", "content_filter"] = "stop"
 
 
 class Usage(BaseModel):
@@ -75,6 +89,10 @@ class ModelListResponse(BaseModel):
 
 def create_completion_id() -> str:
     return f"chatcmpl-{uuid.uuid4().hex[:24]}"
+
+
+def create_tool_call_id() -> str:
+    return f"call_{uuid.uuid4().hex[:24]}"
 
 
 def now_epoch() -> int:

@@ -22,7 +22,8 @@ class FakeModel:
         return [FakeVector([base + i, base + i + 0.5]) for i, _ in enumerate(texts)]
 
 
-def test_daemon_embeds_batch_with_query_prefix(tmp_path):
+def test_daemon_embeds_batch_with_query_prefix(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_LLM_QUEUE_DB", str(tmp_path / "queue.sqlite3"))
     daemon = EmbeddingDaemon(tmp_path, model_class=FakeModel)
     try:
         result = daemon.embed(["検索語", "別の検索語"], embed_type="query", priority="high")
@@ -40,7 +41,8 @@ def test_priorities_put_high_before_low():
     assert PRIORITIES["high"] < PRIORITIES["normal"] < PRIORITIES["low"]
 
 
-def test_daemon_rejects_empty_text_without_dropping_index(tmp_path):
+def test_daemon_rejects_empty_text_without_dropping_index(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCAL_LLM_QUEUE_DB", str(tmp_path / "queue.sqlite3"))
     daemon = EmbeddingDaemon(tmp_path, model_class=FakeModel)
     try:
         with pytest.raises(ValueError) as exc_info:

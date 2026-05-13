@@ -20,6 +20,7 @@ try:
     from shared.daemon_queue import (
         PRIORITIES,
         QueueItem,
+        ServiceProcessLock,
         SingleWorkerPriorityQueue,
     )
 except ModuleNotFoundError:  # pragma: no cover - supports direct script execution
@@ -27,6 +28,7 @@ except ModuleNotFoundError:  # pragma: no cover - supports direct script executi
     from shared.daemon_queue import (
         PRIORITIES,
         QueueItem,
+        ServiceProcessLock,
         SingleWorkerPriorityQueue,
     )
 
@@ -50,12 +52,18 @@ class EmbeddingDaemon:
                 f"Model not found: {model_path}\nRun: python scripts/download_model.py"
             )
 
-        resolved_model_class = model_class or core.get_model_class()
-        self.model_dir = model_path
-        self.model = resolved_model_class(str(model_path))
-        self._queue: SingleWorkerPriorityQueue[EmbedPayload, dict[str, Any]] = (
-            SingleWorkerPriorityQueue("embedding", self._handle_embed)
-        )
+        self._lock = ServiceProcessLock("embedding-daemon")
+        self._lock.acquire()
+        try:
+            resolved_model_class = model_class or core.get_model_class()
+            self.model_dir = model_path
+            self.model = resolved_model_class(str(model_path))
+            self._queue: SingleWorkerPriorityQueue[EmbedPayload, dict[str, Any]] = (
+                SingleWorkerPriorityQueue("embedding", self._handle_embed)
+            )
+        except Exception:
+            self._lock.release()
+            raise
 
     def embed(
         self,
@@ -88,14 +96,24 @@ class EmbeddingDaemon:
 
     def shutdown(self) -> None:
         self._queue.shutdown()
+        self._lock.release()
 
     def _handle_embed(self, item: QueueItem[EmbedPayload, dict[str, Any]]) -> dict[str, Any]:
         request = item.payload
-        prefixed = [f"{request.embed_type}: {text}" for text in request.texts]
+        if isinstance(request, dict):
+            embed_type = str(request["embed_type"])
+            normalize = bool(request["normalize"])
+            texts = [str(text) for text in request["texts"]]
+        else:
+            embed_type = request.embed_type
+            normalize = request.normalize
+            texts = request.texts
+
+        prefixed = [f"{embed_type}: {text}" for text in texts]
         encode_start = time.perf_counter()
         vectors = self.model.encode(
             prefixed,
-            normalize_embeddings=request.normalize,
+            normalize_embeddings=normalize,
         )
         encode_ms = (time.perf_counter() - encode_start) * 1000
         embeddings = [vector.tolist() for vector in vectors]
@@ -103,8 +121,8 @@ class EmbeddingDaemon:
             "embeddings": embeddings,
             "dimension": len(embeddings[0]) if embeddings else 0,
             "count": len(embeddings),
-            "type": request.embed_type,
-            "normalize": request.normalize,
+            "type": embed_type,
+            "normalize": normalize,
             "queueWaitMs": round((encode_start - item.queued_at) * 1000, 3),
             "encodeMs": round(encode_ms, 3),
         }

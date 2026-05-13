@@ -7,6 +7,10 @@ from typing import Any, Generator
 
 DEFAULT_MODEL_PATH = os.getenv("GEMMA4_MODEL", "mlx-community/gemma-4-e4b-it-4bit")
 DEFAULT_MODEL_ID = os.getenv("GEMMA4_API_MODEL_ID", "gemma-4-e4b-it")
+DEFAULT_QWEN_MODEL_PATH = os.getenv("QWEN_MODEL", "mlx-community/Qwen3.6-14B-4bit")
+DEFAULT_QWEN_MODEL_ID = os.getenv("QWEN_API_MODEL_ID", "qwen-3.6-14b-it")
+DEFAULT_BONSAI_MODEL_PATH = os.getenv("BONSAI_MODEL", "prism-ml/Ternary-Bonsai-8B-mlx-2bit")
+DEFAULT_BONSAI_MODEL_ID = os.getenv("BONSAI_API_MODEL_ID", "bonsai-8b-2bit")
 DEFAULT_DRAFT_MODEL_PATH = os.getenv(
     "GEMMA4_DRAFT_MODEL",
     "mlx-community/gemma-4-E4B-it-assistant-bf16",
@@ -139,13 +143,36 @@ class MLXModelManager:
         self._last_generation_stats: dict[str, Any] | None = None
 
     def validate_model(self, requested_model: str | None) -> str:
+        available = self.available_models()
+
         if not requested_model:
             return self.default_model_path
 
-        if requested_model in {self.model_id, self.default_model_path}:
-            return self.default_model_path
+        if requested_model in available:
+            return available[requested_model]
+
+        if requested_model in set(available.values()):
+            return requested_model
 
         raise ValueError(f"Unsupported model: {requested_model}")
+
+    def available_models(self) -> dict[str, str]:
+        models: dict[str, str] = {self.model_id: self.default_model_path}
+        models[DEFAULT_MODEL_PATH] = DEFAULT_MODEL_PATH
+
+        if DEFAULT_QWEN_MODEL_PATH:
+            models[DEFAULT_QWEN_MODEL_ID] = DEFAULT_QWEN_MODEL_PATH
+            models[DEFAULT_QWEN_MODEL_PATH] = DEFAULT_QWEN_MODEL_PATH
+        if DEFAULT_BONSAI_MODEL_PATH:
+            models[DEFAULT_BONSAI_MODEL_ID] = DEFAULT_BONSAI_MODEL_PATH
+            models[DEFAULT_BONSAI_MODEL_PATH] = DEFAULT_BONSAI_MODEL_PATH
+
+        # Preserve insertion order while de-duplicating by key.
+        deduped: dict[str, str] = {}
+        for key, value in models.items():
+            if key and value:
+                deduped[key] = value
+        return deduped
 
     def ensure_loaded(self, model_path: str | None = None) -> None:
         target_model = model_path or self.default_model_path
@@ -336,13 +363,19 @@ class MLXModelManager:
                     yield chunk
 
     def list_models(self) -> list[dict[str, Any]]:
+        visible_ids = []
+        for model_id in [self.model_id, DEFAULT_QWEN_MODEL_ID, DEFAULT_BONSAI_MODEL_ID]:
+            if model_id not in visible_ids:
+                visible_ids.append(model_id)
+
         return [
             {
-                "id": self.model_id,
+                "id": model_id,
                 "object": "model",
                 "created": self.created,
                 "owned_by": "local-mlx-mtp" if self.mtp_enabled else "local-mlx",
             }
+            for model_id in visible_ids
         ]
 
 

@@ -3,12 +3,14 @@ import time
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from shared.daemon_queue import SingleWorkerPriorityQueue
+from shared.daemon_queue import ServiceProcessLock, SingleWorkerPriorityQueue
 
 
-def test_single_worker_priority_queue_processes_one_at_a_time():
+def test_single_worker_priority_queue_processes_one_at_a_time(tmp_path):
     active = 0
     max_active = 0
     processed = []
@@ -21,7 +23,7 @@ def test_single_worker_priority_queue_processes_one_at_a_time():
         active -= 1
         return f"ok:{item.payload}"
 
-    queue = SingleWorkerPriorityQueue("test", handler)
+    queue = SingleWorkerPriorityQueue("test", handler, db_path=tmp_path / "queue.sqlite3")
     try:
         assert queue.submit("a") == "ok:a"
         assert queue.submit("b") == "ok:b"
@@ -32,8 +34,12 @@ def test_single_worker_priority_queue_processes_one_at_a_time():
     assert max_active == 1
 
 
-def test_single_worker_priority_queue_rejects_invalid_priority():
-    queue = SingleWorkerPriorityQueue("test", lambda item: item.payload)
+def test_single_worker_priority_queue_rejects_invalid_priority(tmp_path):
+    queue = SingleWorkerPriorityQueue(
+        "test",
+        lambda item: item.payload,
+        db_path=tmp_path / "queue.sqlite3",
+    )
     try:
         try:
             queue.submit("x", priority="urgent")
@@ -45,7 +51,7 @@ def test_single_worker_priority_queue_rejects_invalid_priority():
         queue.shutdown()
 
 
-def test_single_worker_priority_queue_prioritizes_waiting_items():
+def test_single_worker_priority_queue_prioritizes_waiting_items(tmp_path):
     gate = threading.Event()
     processed = []
 
@@ -55,7 +61,7 @@ def test_single_worker_priority_queue_prioritizes_waiting_items():
             gate.wait(timeout=2)
         return item.payload
 
-    queue = SingleWorkerPriorityQueue("test", handler)
+    queue = SingleWorkerPriorityQueue("test", handler, db_path=tmp_path / "queue.sqlite3")
     results = {}
 
     def submit(name, priority):
@@ -83,7 +89,7 @@ def test_single_worker_priority_queue_prioritizes_waiting_items():
     assert processed == ["gate", "high", "low"]
 
 
-def test_single_worker_priority_queue_skips_timed_out_waiting_items():
+def test_single_worker_priority_queue_skips_timed_out_waiting_items(tmp_path):
     gate = threading.Event()
     processed = []
 
@@ -93,7 +99,7 @@ def test_single_worker_priority_queue_skips_timed_out_waiting_items():
             gate.wait(timeout=2)
         return item.payload
 
-    queue = SingleWorkerPriorityQueue("test", handler)
+    queue = SingleWorkerPriorityQueue("test", handler, db_path=tmp_path / "queue.sqlite3")
     gate_error = []
 
     def submit_gate():
@@ -116,10 +122,21 @@ def test_single_worker_priority_queue_skips_timed_out_waiting_items():
 
         gate.set()
         gate_thread.join(timeout=2)
-        queue._queue.join()  # noqa: SLF001 - test observes daemon drain behavior
     finally:
         queue.shutdown()
 
     assert gate_error == []
     assert processed == ["gate"]
     assert queue.health()["cancelledCount"] == 1
+
+
+def test_service_process_lock_blocks_second_acquire(tmp_path):
+    db_path = tmp_path / "queue.sqlite3"
+    first = ServiceProcessLock("llm-daemon", db_path=db_path)
+    first.acquire()
+    second = ServiceProcessLock("llm-daemon", db_path=db_path)
+    try:
+        with pytest.raises(RuntimeError):
+            second.acquire()
+    finally:
+        first.release()

@@ -3,10 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
-MODEL="${QWEN_MODEL:-mlx-community/Qwen3.6-14B-4bit}"
+MODEL="${QWEN_API_MODEL_ID:-qwen-3.6-14b-it}"
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
   PYTHON_BIN="python3"
 fi
 
-exec "${PYTHON_BIN}" "${ROOT_DIR}/main.py" --backend qwen --model "${MODEL}" "$@"
+exec "${PYTHON_BIN}" "${ROOT_DIR}/main.py" --model "${MODEL}" "$@"

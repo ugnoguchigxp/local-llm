@@ -1,112 +1,100 @@
-# Local LLM Runtime (Gemma 4 + Qwen 3.6 + Bonsai + Embedding)
+# local-llm (API Server First)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Platform: macOS](https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-lightgrey.svg)](https://developer.apple.com/metal/tensorflow-plugin/)
+`local-llm` は **OpenAI 互換 API サーバー** としてローカルモデルを提供するためのランタイムです。  
+コーディングエージェントの UI・コード編集・CLI 実行はこのリポジトリの責務ではなく、**呼び出し元クライアント**（Zed など）側で実装する前提です。
 
-このプロジェクトは、Apple Silicon (MLX) や Ollama を活用して、高性能な LLM ローカル実行環境、埋め込み (Embedding) サーバー、および自律型エージェント機能を提供します。M4 Mac 等の最新ハードウェアに最適化されたモデル構成を採用しており、完全ローカルでセキュアな RAG 環境を構築可能です。
+## 目的
 
----
+- API サーバー責務に集中
+  - モデルロード / 推論
+  - OpenAI 互換エンドポイント
+  - 認証・ヘルスチェック
+- クライアント責務を分離
+  - UI
+  - ツール実行
+  - エージェントループ
 
-## ✨ 主な特徴
+## 提供エンドポイント
 
-- **マルチバックエンド対応**: `MLX` (Apple Silicon 最適化), `Ollama`, `Bonsai` をシームレスに切り替え。
-- **最新・最適化モデルのサポート (May 2026)**:
-  - **Gemma 4 (E4B)**: Google の最新軽量モデル。MTP 推論による高速生成に対応。
-  - **Qwen 3.6 (14B)**: コーディングやエージェントタスクに最適な最新 Qwen。標準的な M4 Mac (16GB RAM) でも軽快に動作する 14B モデルを採用。
-  - **Bonsai**: 2-bit 量子化でも高い知能を維持する極限効率モデル。
-- **ローカル Embedding サーバー**: `multilingual-e5-small` による高性能な埋め込み API。
-- **自律型エージェント (MCP)**: Web検索 (`Brave Search`) やウェブスクレイピング機能を標準搭載。
-- **OpenAI 互換 API**: Chat Completions および Embeddings を提供。
+- `GET /health`
+- `GET /status`
+- `GET /v1/models`
+- `POST /v1/chat/completions`
 
----
+`/v1/chat/completions` は `tool_calls` を返せます。  
+ただし **ツール実行はサーバーでは行いません**。ツール実行は呼び出し元クライアントで行ってください。
 
-## 💻 ハードウェア要件
-
-- **推奨**: Apple Silicon (M1/M2/M3/M4) 搭載の Mac
-  - **M4 Mac 推奨**: Qwen 3.6 MoE モデルなどの最新アーキテクチャを快適に動作させるために最適です。
-  - メモリ (Unified Memory): 16GB 以上推奨（32GB 以上で Qwen 3.6 35B がより快適に動作します）。
-
----
-
-## 🚀 セットアップ手順
-
-### 1. リポジトリの準備
+## セットアップ
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/localLlm.git
 cd localLlm
-```
-
-### 2. 仮想環境と依存関係のインストール
-
-```bash
-# 全体セットアップスクリプトの実行（推奨）
 bash scripts/setup.sh
-```
-
-### 3. 環境変数の設定
-
-```bash
 cp .env.example .env
 ```
 
----
-
-## 🛠 使い方と得られる結果
-
-### 1. CLI での対話
-
-最新の量子化済み MLX モデルを即座に試せます。
+## API サーバー起動
 
 ```bash
-# Gemma 4 を使用 (高速)
-./scripts/gemma4 "こんにちは"
-
-# Qwen 3.6 を使用 (高度なコーディング・推論)
-./scripts/qwen "複雑な Rust コードを書いて"
-
-# Bonsai を使用 (低メモリ消費)
-./scripts/bonsai "自己紹介してください"
-```
-
-### 2. API サーバーの起動
-
-```bash
-# Chat API (Port: 44448)
 ./scripts/run_openai_api.sh
-
-# Embedding API (Port: 44512)
-./scripts/run_embedding_daemon.sh
 ```
 
----
+デフォルト: `http://127.0.0.1:44448`
 
-## ⚙️ 環境変数の詳細 (.env)
+## API 動作確認
 
-| 変数名 | 説明 | 既定値 |
-| :--- | :--- | :--- |
-| `GEMMA4_MODEL` | MLX で使用する Gemma モデル | `mlx-community/gemma-4-e4b-it-4bit` |
-| `QWEN_MODEL` | MLX で使用する Qwen モデル | `mlx-community/Qwen3.6-14B-4bit` |
-| `GEMMA4_API_PORT` | Chat API サーバーのポート | `44448` |
-| `EMBEDDING_API_PORT` | Embedding API のポート | `44512` |
-
----
-
-## 🔍 トラブルシューティング
-
-### 環境診断
-```bash
-./scripts/doctor
-```
-
-### ステータス確認
 ```bash
 ./scripts/status
+curl http://127.0.0.1:44448/v1/models
 ```
 
----
+## Zed から利用
 
-## 📜 ライセンス
+Zed の `OpenAI Compatible` プロバイダで次を設定します。
 
-[MIT License](LICENSE)
+- API URL: `http://127.0.0.1:44448/v1`
+- Model: `gemma-4-e4b-it` / `qwen-3.6-14b-it` / `bonsai-8b-2bit`
+
+参考: [Zed LLM Providers](https://zed.dev/docs/ai/llm-providers)
+
+## CLI（外部 API 呼び出しクライアント）
+
+`main.py` は API クライアントとして動作します。
+
+```bash
+# 単発
+./scripts/gemma4 "FastAPIでJWT検証ミドルウェアの例を書いて"
+
+# API URL を指定
+python3 main.py --api-base http://127.0.0.1:44448 --model qwen-3.6-14b-it "Rustの所有権を説明して"
+
+# 対話
+python3 main.py --model gemma-4-e4b-it
+```
+
+### CLIのローカルツール
+
+CLI は最小ツールとして以下をサポートします。
+
+- `search_web(query)`
+- `fetch_content(url)`
+
+このツールは **CLI 側** で実行されます。  
+サーバー側は tool call の返却のみを担当します。
+
+## モデル設定
+
+`.env` 例:
+
+- `GEMMA4_MODEL` / `GEMMA4_API_MODEL_ID`
+- `QWEN_MODEL` / `QWEN_API_MODEL_ID`
+- `BONSAI_MODEL` / `BONSAI_API_MODEL_ID`
+
+## 認証
+
+- `LOCAL_LLM_REQUIRE_AUTH=true` で Bearer 認証を有効化
+- `LOCAL_LLM_ACCESS_TOKEN=<token>` を設定
+
+## ライセンス
+
+MIT
