@@ -55,6 +55,13 @@ def _env_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _max_tokens_for_request(requested_max_tokens: int, has_tools: bool) -> int:
+    output_cap = _env_int("LOCAL_LLM_MAX_OUTPUT_TOKENS", 20000)
+    tool_call_cap = _env_int("LOCAL_LLM_MAX_TOOL_CALL_TOKENS", max(output_cap, 1024))
+    cap = tool_call_cap if has_tools else output_cap
+    return max(1, min(int(requested_max_tokens), cap))
+
+
 def _append_debug_log(event: dict[str, Any]) -> None:
     log_file = os.getenv("LOCAL_LLM_DEBUG_LOG_FILE", "").strip()
     if not log_file:
@@ -153,7 +160,7 @@ async def chat_completions(request: ChatCompletionRequest):
     else:
         tool_defs = []
 
-    max_tokens = max(1, min(int(request.max_tokens), _env_int("LOCAL_LLM_MAX_OUTPUT_TOKENS", 512)))
+    max_tokens = _max_tokens_for_request(request.max_tokens, has_tools=bool(tool_defs))
 
     async def run_chat_once() -> dict[str, object]:
         try:

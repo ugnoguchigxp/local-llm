@@ -294,7 +294,7 @@ class LocalLlmDaemon:
             }
 
         prepared_messages = _normalize_messages(messages, tools if isinstance(tools, list) else [])
-        default_cap = _env_int("LOCAL_LLM_MAX_OUTPUT_TOKENS", 512)
+        default_cap = _env_int("LOCAL_LLM_MAX_OUTPUT_TOKENS", 20000)
         tool_call_cap = _env_int("LOCAL_LLM_MAX_TOOL_CALL_TOKENS", max(default_cap, 1024))
         token_cap = tool_call_cap if tools else default_cap
         max_tokens = max(1, min(max_tokens, token_cap))

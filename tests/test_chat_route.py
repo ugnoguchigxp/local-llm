@@ -19,8 +19,20 @@ class _FakeDaemon:
     def __init__(self, content: str):
         self.manager = _FakeManager()
         self._content = content
+        self.calls = []
 
     def chat(self, messages, model, max_tokens, temperature, tools=None, priority="normal", timeout=None):
+        self.calls.append(
+            {
+                "messages": messages,
+                "model": model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "tools": tools,
+                "priority": priority,
+                "timeout": timeout,
+            }
+        )
         return {
             "content": self._content,
             "usage": {
@@ -229,6 +241,57 @@ def test_chat_completion_sanitizes_plain_response():
     body = response.json()
     assert body["choices"][0]["finish_reason"] == "stop"
     assert body["choices"][0]["message"]["content"] == "最終回答です"
+
+
+def test_chat_completion_uses_tool_call_token_cap(monkeypatch):
+    monkeypatch.setenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "256")
+    monkeypatch.setenv("LOCAL_LLM_MAX_TOOL_CALL_TOKENS", "1024")
+    fake_daemon = _FakeDaemon('{"name":"search_web","arguments":{"query":"latest rust release"}}')
+    client = _build_client(fake_daemon)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gemma-4-e4b-it",
+            "messages": [{"role": "user", "content": "最新のRustのバージョンを調べて"}],
+            "max_tokens": 2048,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search_web",
+                        "description": "search",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"query": {"type": "string"}},
+                        },
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake_daemon.calls[0]["max_tokens"] == 1024
+
+
+def test_chat_completion_uses_plain_output_token_cap(monkeypatch):
+    monkeypatch.setenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "256")
+    monkeypatch.setenv("LOCAL_LLM_MAX_TOOL_CALL_TOKENS", "1024")
+    fake_daemon = _FakeDaemon("最終回答です")
+    client = _build_client(fake_daemon)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gemma-4-e4b-it",
+            "messages": [{"role": "user", "content": "回答してください"}],
+            "max_tokens": 2048,
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake_daemon.calls[0]["max_tokens"] == 256
 
 
 def test_chat_completion_rejects_invalid_tool_choice():
