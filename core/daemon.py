@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -46,6 +47,44 @@ def _extract_text_content(content: Any) -> str:
     return str(content)
 
 
+def _summarize_tool_arguments(raw_arguments: Any, max_len: int = 220) -> str:
+    try:
+        parsed = raw_arguments
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
+        if isinstance(parsed, dict):
+            keys = list(parsed.keys())
+            # Avoid leaking large payload values (e.g., edit_file content) into prompt context.
+            if not keys:
+                summary = "{}"
+            else:
+                visible_pairs: list[str] = []
+                for key in keys:
+                    if key in {"content", "new_text", "text", "replacement"}:
+                        visible_pairs.append(f"{key}=<omitted>")
+                    elif key in {"edits", "operations", "changes"}:
+                        value = parsed.get(key)
+                        if isinstance(value, list):
+                            visible_pairs.append(f"{key}=[{len(value)} items]")
+                        else:
+                            visible_pairs.append(f"{key}=<omitted>")
+                    else:
+                        value = parsed.get(key)
+                        if isinstance(value, (str, int, float, bool)) or value is None:
+                            visible_pairs.append(f"{key}={value!r}")
+                        else:
+                            visible_pairs.append(f"{key}=<complex>")
+                summary = "{ " + ", ".join(visible_pairs) + " }"
+        else:
+            summary = str(raw_arguments)
+    except Exception:
+        summary = str(raw_arguments)
+
+    if len(summary) > max_len:
+        return summary[: max_len - 3] + "..."
+    return summary
+
+
 def _build_tool_instruction(tools: list[dict[str, Any]]) -> str:
     if not tools:
         return ""
@@ -55,6 +94,7 @@ def _build_tool_instruction(tools: list[dict[str, Any]]) -> str:
         "If a function is needed, output only one JSON object in this exact shape:",
         '{"name":"<function_name>","arguments":{"arg":"value"}}',
         "Do not include markdown or explanation when emitting a function call.",
+        "Keep arguments compact. For large file changes, avoid embedding huge payloads in one call.",
         "Available functions:",
     ]
     for tool in tools:
@@ -114,7 +154,8 @@ def _normalize_messages(
                 arguments = str(function.get("arguments", "")).strip()
                 if not name:
                     continue
-                call_lines.append(f"- {name}({arguments})")
+                args_summary = _summarize_tool_arguments(arguments)
+                call_lines.append(f"- {name}({args_summary})")
             if call_lines:
                 call_summary = "Assistant requested tool calls:\n" + "\n".join(call_lines)
                 content = f"{content}\n\n{call_summary}".strip()
@@ -140,6 +181,7 @@ class ChatPayload:
     max_tokens: int
     temperature: float
     tools: list[dict[str, Any]]
+    preload_only: bool = False
 
 
 class LocalLlmDaemon:
@@ -164,7 +206,16 @@ class LocalLlmDaemon:
 
     def preload(self) -> None:
         try:
-            self.manager.ensure_loaded()
+            preload_timeout = _env_int("LOCAL_LLM_DAEMON_PRELOAD_TIMEOUT_MS", 1_800_000) / 1000
+            payload = ChatPayload(
+                messages=[],
+                model=self.manager.default_model_path,
+                max_tokens=1,
+                temperature=0.0,
+                tools=[],
+                preload_only=True,
+            )
+            self._queue.submit(payload, priority="high", timeout=preload_timeout)
             self._preload_error = None
         except Exception as exc:
             self._preload_error = str(exc)
@@ -186,6 +237,7 @@ class LocalLlmDaemon:
             max_tokens=max_tokens,
             temperature=temperature,
             tools=tools or [],
+            preload_only=False,
         )
         effective_timeout = timeout
         if effective_timeout is None:
@@ -215,17 +267,48 @@ class LocalLlmDaemon:
             max_tokens = int(payload["max_tokens"])
             temperature = float(payload["temperature"])
             tools = payload.get("tools", [])
+            preload_only = bool(payload.get("preload_only", False))
         else:
             messages = payload.messages
             model = payload.model
             max_tokens = payload.max_tokens
             temperature = payload.temperature
             tools = payload.tools
+            preload_only = payload.preload_only
+
+        if preload_only:
+            start = time.perf_counter()
+            try:
+                self.manager.ensure_loaded(model)
+                self._preload_error = None
+            except Exception as exc:
+                self._preload_error = str(exc)
+                raise
+            finished = time.perf_counter()
+            return {
+                "content": "",
+                "usage": self.manager.last_generation_stats(),
+                "preload": True,
+                "queueWaitMs": round((start - item.queued_at) * 1000, 3),
+                "generateMs": round((finished - start) * 1000, 3),
+            }
 
         prepared_messages = _normalize_messages(messages, tools if isinstance(tools, list) else [])
+        default_cap = _env_int("LOCAL_LLM_MAX_OUTPUT_TOKENS", 512)
+        tool_call_cap = _env_int("LOCAL_LLM_MAX_TOOL_CALL_TOKENS", max(default_cap, 1024))
+        token_cap = tool_call_cap if tools else default_cap
+        max_tokens = max(1, min(max_tokens, token_cap))
 
         start = time.perf_counter()
         try:
+            prompt_tokens = self.manager.count_prompt_tokens(prepared_messages, model=model)
+            max_prompt_tokens = _env_int("LOCAL_LLM_MAX_PROMPT_TOKENS", 32768)
+            if prompt_tokens > max_prompt_tokens:
+                raise ValueError(
+                    f"prompt_too_large: prompt_tokens={prompt_tokens} "
+                    f"max_prompt_tokens={max_prompt_tokens}"
+                )
+
             content = "".join(
                 self.manager.generate_stream(
                     prepared_messages,

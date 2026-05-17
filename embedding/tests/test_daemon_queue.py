@@ -1,6 +1,7 @@
 import threading
 import time
 import sys
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -140,3 +141,66 @@ def test_service_process_lock_blocks_second_acquire(tmp_path):
             second.acquire()
     finally:
         first.release()
+
+
+def test_queue_accepts_directory_db_path(tmp_path):
+    db_dir = tmp_path / "runtime-dir"
+    queue = SingleWorkerPriorityQueue("test", lambda item: item.payload, db_path=db_dir)
+    try:
+        assert queue.submit("ok") == "ok"
+    finally:
+        queue.shutdown()
+
+    assert (db_dir / "daemon_queue.sqlite3").exists()
+
+
+def test_queue_accepts_sqlite_url_from_env(tmp_path, monkeypatch):
+    db_file = tmp_path / "runtime" / "queue.sqlite3"
+    monkeypatch.setenv("LOCAL_LLM_QUEUE_DB", f"sqlite:///{db_file}")
+    queue = SingleWorkerPriorityQueue("test", lambda item: item.payload)
+    try:
+        assert queue.submit("ok") == "ok"
+    finally:
+        queue.shutdown()
+
+    assert db_file.exists()
+
+
+def test_queue_recovers_orphaned_running_jobs_on_startup(tmp_path):
+    db_path = tmp_path / "queue.sqlite3"
+    queue = SingleWorkerPriorityQueue("local-llm", lambda item: item.payload, db_path=db_path)
+    queue.shutdown()
+
+    now = time.perf_counter()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO daemon_jobs (
+                queue_name, priority, payload_json, status, queued_at, started_at, owner
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?)
+            """,
+            ("local-llm", 10, '"orphan"', now, now, "999999:local-llm:stale"),
+        )
+
+    recovered = SingleWorkerPriorityQueue("local-llm", lambda item: item.payload, db_path=db_path)
+    try:
+        health = recovered.health()
+        assert health["inFlight"] == 0
+
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            row = conn.execute(
+                """
+                SELECT status, error
+                FROM daemon_jobs
+                WHERE queue_name = 'local-llm'
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+
+        assert row is not None
+        assert row["status"] == "failed"
+        assert "orphaned running job recovered after restart" in str(row["error"] or "")
+    finally:
+        recovered.shutdown()

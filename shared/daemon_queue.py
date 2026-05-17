@@ -5,10 +5,11 @@ import json
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Event, Lock, Thread
-from typing import Any, Callable, Generic, TypeVar
+from typing import Any, Callable, Generic, Iterator, TypeVar
 
 PRIORITIES = {
     "high": 0,
@@ -16,6 +17,7 @@ PRIORITIES = {
     "low": 20,
 }
 PRIORITY_LABELS = {value: key for key, value in PRIORITIES.items()}
+DEFAULT_QUEUE_DB_FILENAME = "daemon_queue.sqlite3"
 
 PayloadT = TypeVar("PayloadT")
 ResultT = TypeVar("ResultT")
@@ -58,6 +60,9 @@ class SingleWorkerPriorityQueue(Generic[PayloadT, ResultT]):
         self._cancelled_count = 0
         self._active_priority: int | None = None
         self._init_db()
+        recovered = self._recover_orphaned_running_jobs()
+        if recovered:
+            self._failed_count += recovered
         self._worker = Thread(target=self._run_worker, name=f"{name}-worker", daemon=True)
         self._worker.start()
 
@@ -150,21 +155,24 @@ class SingleWorkerPriorityQueue(Generic[PayloadT, ResultT]):
 
     @staticmethod
     def _resolve_db_path(path: str | Path | None) -> Path:
+        raw: str | Path
         if path is not None:
-            resolved = Path(path).expanduser()
+            raw = path
         else:
-            raw = os.getenv("LOCAL_LLM_QUEUE_DB", "").strip()
-            if raw:
-                resolved = Path(raw).expanduser()
+            env_value = os.getenv("LOCAL_LLM_QUEUE_DB", "").strip()
+            if env_value:
+                raw = env_value
             else:
-                resolved = Path.home() / ".localLlm" / "runtime" / "daemon_queue.sqlite3"
-        resolved.parent.mkdir(parents=True, exist_ok=True)
-        return resolved
+                raw = Path.home() / ".localLlm" / "runtime" / DEFAULT_QUEUE_DB_FILENAME
+        return _normalize_db_path(raw)
 
-    def _connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        return conn
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        conn = _connect_sqlite(self._db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._connection() as conn:
@@ -202,6 +210,51 @@ class SingleWorkerPriorityQueue(Generic[PayloadT, ResultT]):
                 )
                 """
             )
+
+    def _recover_orphaned_running_jobs(self) -> int:
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, owner
+                FROM daemon_jobs
+                WHERE queue_name = ? AND status = 'running'
+                """,
+                (self.name,),
+            ).fetchall()
+            if not rows:
+                return 0
+
+            orphaned: list[tuple[int, str | None]] = []
+            for row in rows:
+                owner = row["owner"]
+                owner_pid = _owner_pid(owner)
+                if owner_pid is None or not _pid_alive(owner_pid):
+                    orphaned.append((int(row["id"]), owner))
+
+            if not orphaned:
+                return 0
+
+            finished_at = time.perf_counter()
+            for queue_id, previous_owner in orphaned:
+                conn.execute(
+                    """
+                    UPDATE daemon_jobs
+                    SET status = 'failed',
+                        error = ?,
+                        finished_at = ?,
+                        owner = ?
+                    WHERE id = ? AND queue_name = ? AND status = 'running'
+                    """,
+                    (
+                        f"orphaned running job recovered after restart (previous_owner={previous_owner})",
+                        finished_at,
+                        self._owner,
+                        queue_id,
+                        self.name,
+                    ),
+                )
+
+            return len(orphaned)
 
     def _enqueue_payload(self, payload: PayloadT, priority: str) -> int:
         queued_at = time.perf_counter()
@@ -368,10 +421,13 @@ class ServiceProcessLock:
                 (self.service_name, self.pid),
             )
 
-    def _connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        return conn
+    @contextmanager
+    def _connection(self) -> Iterator[sqlite3.Connection]:
+        conn = _connect_sqlite(self._db_path)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _init_db(self) -> None:
         with self._connection() as conn:
@@ -399,6 +455,50 @@ def _decode_json_field(raw: str | None) -> Any:
     return json.loads(raw)
 
 
+def _normalize_db_path(raw_path: str | Path) -> Path:
+    if isinstance(raw_path, Path):
+        candidate = str(raw_path)
+    else:
+        candidate = raw_path
+
+    candidate = candidate.strip().strip('"').strip("'")
+    if candidate.startswith("sqlite:///"):
+        candidate = candidate.removeprefix("sqlite:///")
+    elif candidate.startswith("sqlite://"):
+        candidate = candidate.removeprefix("sqlite://")
+
+    expanded = Path(os.path.expandvars(candidate)).expanduser()
+    if expanded.exists() and expanded.is_dir():
+        expanded = expanded / DEFAULT_QUEUE_DB_FILENAME
+    elif candidate.endswith(("/", "\\")):
+        expanded = expanded / DEFAULT_QUEUE_DB_FILENAME
+    elif not expanded.exists() and expanded.suffix == "":
+        # Treat suffix-less, non-existent paths as directories for safer defaults.
+        expanded = expanded / DEFAULT_QUEUE_DB_FILENAME
+
+    expanded.parent.mkdir(parents=True, exist_ok=True)
+    return expanded
+
+
+def _connect_sqlite(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        conn = sqlite3.connect(path, timeout=30, isolation_level=None)
+    except sqlite3.OperationalError as exc:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            conn = sqlite3.connect(path, timeout=30, isolation_level=None)
+        except sqlite3.OperationalError as second_exc:
+            raise sqlite3.OperationalError(
+                f"unable to open database file: {path} ({second_exc})"
+            ) from second_exc
+        else:
+            conn.row_factory = sqlite3.Row
+            return conn
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
@@ -409,3 +509,16 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _owner_pid(owner: Any) -> int | None:
+    if not isinstance(owner, str) or not owner:
+        return None
+    parts = owner.split(":", 1)
+    if not parts:
+        return None
+    try:
+        pid = int(parts[0])
+    except ValueError:
+        return None
+    return pid if pid > 0 else None

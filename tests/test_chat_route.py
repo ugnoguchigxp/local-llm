@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -71,6 +73,145 @@ def test_chat_completion_returns_tool_calls():
     tool_calls = body["choices"][0]["message"]["tool_calls"]
     assert isinstance(tool_calls, list) and len(tool_calls) == 1
     assert tool_calls[0]["function"]["name"] == "search_web"
+
+
+def test_chat_completion_accepts_tool_name_payload():
+    client = _build_client(
+        _FakeDaemon('{"tool_name":"list_directory","arguments":{"path":"/Users/y.noguchi/Code/local-llm"}}')
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gemma-4-e4b-it",
+            "messages": [{"role": "user", "content": "プロジェクトの中身を確認して"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "list_directory",
+                        "description": "list directory",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"path": {"type": "string"}},
+                            "required": ["path"],
+                        },
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["choices"][0]["finish_reason"] == "tool_calls"
+    tool_calls = body["choices"][0]["message"]["tool_calls"]
+    assert isinstance(tool_calls, list) and len(tool_calls) == 1
+    assert tool_calls[0]["function"]["name"] == "list_directory"
+    assert tool_calls[0]["function"]["arguments"] == '{"path": "/Users/y.noguchi/Code/local-llm"}'
+
+
+def test_chat_completion_keeps_nested_tool_arguments_as_json():
+    client = _build_client(
+        _FakeDaemon(
+            '{"tool_name":"edit_file","arguments":{"path":"README.md","edits":[{"old_text":"A","new_text":"B"}],"dry_run":false,"limit":2}}'
+        )
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gemma-4-e4b-it",
+            "messages": [{"role": "user", "content": "READMEを更新して"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "edit_file",
+                        "description": "edit file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["choices"][0]["finish_reason"] == "tool_calls"
+    arguments = body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"]
+    decoded = json.loads(arguments)
+    assert decoded["path"] == "README.md"
+    assert decoded["edits"] == [{"old_text": "A", "new_text": "B"}]
+    assert decoded["dry_run"] is False
+    assert decoded["limit"] == 2
+
+
+def test_chat_completion_parses_assistant_requested_tool_calls_text():
+    client = _build_client(
+        _FakeDaemon(
+            'Assistant requested tool calls:\n- edit_file({"path":"hoge.md","mode":"w","content":"Hello"})'
+        )
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gemma-4-e4b-it",
+            "messages": [{"role": "user", "content": "hoge.md を作って"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "edit_file",
+                        "description": "edit file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["choices"][0]["finish_reason"] == "tool_calls"
+    args = json.loads(body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert args["path"] == "hoge.md"
+    assert args["mode"] == "w"
+    assert args["content"] == "Hello"
+
+
+def test_chat_completion_parses_python_kwargs_style_tool_call_text():
+    client = _build_client(
+        _FakeDaemon(
+            "Assistant requested tool calls:\n"
+            "- edit_file({ display_description='Creating hoge.md', path='hoge.md', mode='w', content='Hello' })"
+        )
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gemma-4-e4b-it",
+            "messages": [{"role": "user", "content": "hoge.md を作って"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "edit_file",
+                        "description": "edit file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["choices"][0]["finish_reason"] == "tool_calls"
+    args = json.loads(body["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"])
+    assert args["path"] == "hoge.md"
+    assert args["mode"] == "w"
+    assert args["content"] == "Hello"
 
 
 def test_chat_completion_sanitizes_plain_response():

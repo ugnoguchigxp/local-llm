@@ -41,12 +41,32 @@ cp .env.example .env
 
 デフォルト: `http://127.0.0.1:44448`
 
+`run_openai_api.sh` は既定で `LOCAL_LLM_GPU_SAFE_MODE=true` として起動し、Metal GPU timeout を避けるために以下を保守設定へ寄せます（未設定時のみ）。
+
+- `LOCAL_LLM_PREFILL_STEP_SIZE=2048`
+- `LOCAL_LLM_MAX_PROMPT_TOKENS=16384`
+- `LOCAL_LLM_MAX_OUTPUT_TOKENS=256`
+- `LOCAL_LLM_MAX_TOOL_CALL_TOKENS=1024`
+- `LOCAL_LLM_CONTEXT_WINDOW=32768`
+
+速度優先で戻したい場合のみ `LOCAL_LLM_GPU_SAFE_MODE=false` を設定してください。
+
 ## API 動作確認
 
 ```bash
 ./scripts/status
 curl http://127.0.0.1:44448/v1/models
 ```
+
+## MTP ベンチマークと自動切替
+
+同一条件で `MTP OFF/ON` を比較し、`ON` が既定以上速ければ `.env` の `GEMMA4_MTP_ENABLED=true` を自動設定します。
+
+```bash
+./.venv/bin/python scripts/benchmark_and_toggle_mtp.py --repeats 2 --warmup 1 --max-tokens 256 --min-speedup 1.10
+```
+
+`speedup >= min_speedup` の場合のみ `GEMMA4_MTP_ENABLED=true`、それ以外は `false` になります。
 
 ## Zed から利用
 
@@ -89,6 +109,12 @@ CLI は最小ツールとして以下をサポートします。
 - `GEMMA4_MODEL` / `GEMMA4_API_MODEL_ID`
 - `QWEN_MODEL` / `QWEN_API_MODEL_ID`
 - `BONSAI_MODEL` / `BONSAI_API_MODEL_ID`
+- `LOCAL_LLM_GPU_SAFE_MODE`（既定 `true`）
+- `LOCAL_LLM_MAX_PROMPT_TOKENS`
+- `LOCAL_LLM_MAX_OUTPUT_TOKENS`
+- `LOCAL_LLM_MAX_TOOL_CALL_TOKENS`
+- `LOCAL_LLM_PREFILL_STEP_SIZE`
+- `LOCAL_LLM_CONTEXT_WINDOW`
 
 ## 認証
 

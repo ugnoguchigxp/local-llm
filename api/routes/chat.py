@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import time
 from typing import Any, AsyncGenerator
 
 from fastapi import APIRouter, HTTPException
@@ -40,6 +42,28 @@ def _message_to_dict(message) -> dict[str, object]:
 
 def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4) if text else 0
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _append_debug_log(event: dict[str, Any]) -> None:
+    log_file = os.getenv("LOCAL_LLM_DEBUG_LOG_FILE", "").strip()
+    if not log_file:
+        return
+    try:
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        return
 
 
 def _extract_tool_defs(request: ChatCompletionRequest) -> list[dict[str, Any]]:
@@ -129,13 +153,15 @@ async def chat_completions(request: ChatCompletionRequest):
     else:
         tool_defs = []
 
+    max_tokens = max(1, min(int(request.max_tokens), _env_int("LOCAL_LLM_MAX_OUTPUT_TOKENS", 512)))
+
     async def run_chat_once() -> dict[str, object]:
         try:
             result = await asyncio.to_thread(
                 daemon.chat,
                 messages,
                 requested_model,
-                request.max_tokens,
+                max_tokens,
                 request.temperature,
                 tool_defs,
                 request.priority,
@@ -144,13 +170,39 @@ async def chat_completions(request: ChatCompletionRequest):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except RuntimeError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
+            detail = str(exc)
+            if detail.startswith("prompt_too_large:") or detail.startswith("context_length_exceeded:"):
+                raise HTTPException(status_code=400, detail=detail) from exc
+            raise HTTPException(status_code=500, detail=detail) from exc
         except TimeoutError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"unexpected daemon error: {exc}",
+            ) from exc
 
     result = await run_chat_once()
     raw_content = str(result.get("content", ""))
     parsed_tool_call = parse_tool_call(raw_content, allowed_tool_names=allowed_tool_names)
+    _append_debug_log(
+        {
+            "ts": int(time.time()),
+            "event": "chat_completions.parse_result",
+            "model": request.model,
+            "allowed_tool_names": sorted(list(allowed_tool_names)),
+            "request_tool_names": [
+                normalize_tool_name(tool.function.name)
+                for tool in (request.tools or [])
+                if tool.type == "function" and tool.function and tool.function.name
+            ],
+            "parsed_tool_call_name": parsed_tool_call.get("name") if parsed_tool_call else None,
+            "parsed_tool_call_arguments_type": (
+                type(parsed_tool_call.get("arguments")).__name__ if parsed_tool_call else None
+            ),
+            "raw_prefix": raw_content[:220],
+        }
+    )
 
     if request.stream:
 

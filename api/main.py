@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI
 from api.auth import require_api_auth
 from api.routes.chat import router as chat_router
 from api.routes.models import router as models_router
+from api.routes.responses import router as responses_router
 from core.daemon import get_local_llm_daemon
 from shared.auth import auth_status
 
@@ -61,6 +62,7 @@ app = FastAPI(
 
 app.include_router(models_router, dependencies=[Depends(require_api_auth)])
 app.include_router(chat_router, dependencies=[Depends(require_api_auth)])
+app.include_router(responses_router, dependencies=[Depends(require_api_auth)])
 
 
 @app.get("/health")
@@ -77,6 +79,7 @@ def status() -> dict[str, object]:
         "api": {
             "models": "/v1/models",
             "chatCompletions": "/v1/chat/completions",
+            "responses": "/v1/responses",
         },
     }
 

@@ -23,11 +23,15 @@ TOOL_ARGS_RE = re.compile(r"\"?(\w+)\"?\s*:\s*<\|\"\|>(.*?)<\|\"\|>", re.DOTALL)
 TOOL_ARGS_QUOTED_RE = re.compile(r"\"?(\w+)\"?\s*:\s*\"((?:\\.|[^\"])*)\"", re.DOTALL)
 TOOL_ARGS_SINGLE_QUOTED_RE = re.compile(r"\"?(\w+)\"?\s*:\s*'((?:\\.|[^'])*)'", re.DOTALL)
 TOOL_ARGS_BARE_RE = re.compile(r"\"?(\w+)\"?\s*:\s*([^,\n}]+)")
+TOOL_ARGS_EQ_QUOTED_RE = re.compile(r"\"?(\w+)\"?\s*=\s*\"((?:\\.|[^\"])*)\"", re.DOTALL)
+TOOL_ARGS_EQ_SINGLE_QUOTED_RE = re.compile(r"\"?(\w+)\"?\s*=\s*'((?:\\.|[^'])*)'", re.DOTALL)
+TOOL_ARGS_EQ_BARE_RE = re.compile(r"\"?(\w+)\"?\s*=\s*([^,\n}]+)")
 THINK_BLOCK_RE = re.compile(r"<\|channel>thought.*?(?:<channel\|>|$)", re.DOTALL)
 COMPLETE_THINK_BLOCK_RE = re.compile(r"<\|channel>thought.*?<channel\|>", re.DOTALL)
 LEGACY_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 INCOMPLETE_TOOL_CALL_RE = re.compile(r"(?:<\|tool_call\|>|<tool_call>).*$", re.DOTALL)
 JSON_CODE_BLOCK_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+PAREN_TOOL_CALL_RE = re.compile(r"(?:^|\n)\s*-\s*([A-Za-z_]\w*)\s*\((\{.*\})\)\s*$", re.DOTALL)
 KNOWN_TOOL_NAMES = (
     "search_web",
     "web_search",
@@ -93,6 +97,24 @@ def _parse_tool_arguments(args_str: str) -> dict[str, str]:
             args[arg_match.group(1)] = arg_match.group(2).replace("\\'", "'").replace('\\n', '\n')
     if not args:
         for arg_match in TOOL_ARGS_BARE_RE.finditer(args_str):
+            args[arg_match.group(1)] = arg_match.group(2).strip()
+    if not args:
+        for arg_match in TOOL_ARGS_EQ_QUOTED_RE.finditer(args_str):
+            val = arg_match.group(2)
+            try:
+                args[arg_match.group(1)] = json.loads(f'"{val}"')
+            except Exception:
+                args[arg_match.group(1)] = (
+                    val.replace('\\"', '"')
+                    .replace('\\n', '\n')
+                    .replace('\\t', '\t')
+                    .replace('\\\\', '\\')
+                )
+    if not args:
+        for arg_match in TOOL_ARGS_EQ_SINGLE_QUOTED_RE.finditer(args_str):
+            args[arg_match.group(1)] = arg_match.group(2).replace("\\'", "'").replace('\\n', '\n')
+    if not args:
+        for arg_match in TOOL_ARGS_EQ_BARE_RE.finditer(args_str):
             args[arg_match.group(1)] = arg_match.group(2).strip()
     if not args and args_str.strip():
         try:
@@ -212,22 +234,50 @@ class ChatEngine:
         self.messages.append({"role": role, "content": content})
 
     @staticmethod
+    def _json_safe_value(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(k): ChatEngine._json_safe_value(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [ChatEngine._json_safe_value(v) for v in value]
+        return str(value)
+
+    @staticmethod
     def _parse_tool_payload(payload: Any) -> dict[str, Any] | None:
         if not isinstance(payload, dict):
             return None
 
-        func_name = payload.get("name")
-        arguments: Any = payload.get("arguments", {})
+        func_name = payload.get("name") or payload.get("tool_name") or payload.get("function_name")
+        arguments: Any = payload.get("arguments")
+        if arguments is None:
+            arguments = payload.get("args")
+        if arguments is None:
+            arguments = payload.get("params")
+        if arguments is None:
+            arguments = payload.get("parameters")
 
         if not isinstance(func_name, str) and isinstance(payload.get("function"), dict):
             function = payload["function"]
-            func_name = function.get("name")
+            func_name = function.get("name") or function.get("tool_name") or function.get("function_name")
             arguments = function.get("arguments", arguments)
+            if arguments is None:
+                arguments = function.get("args")
+            if arguments is None:
+                arguments = function.get("params")
+            if arguments is None:
+                arguments = function.get("parameters")
 
         if not isinstance(func_name, str) and isinstance(payload.get("tool"), dict):
             tool = payload["tool"]
-            func_name = tool.get("name")
+            func_name = tool.get("name") or tool.get("tool_name") or tool.get("function_name")
             arguments = tool.get("arguments", arguments)
+            if arguments is None:
+                arguments = tool.get("args")
+            if arguments is None:
+                arguments = tool.get("params")
+            if arguments is None:
+                arguments = tool.get("parameters")
 
         if not isinstance(func_name, str) or not func_name:
             return None
@@ -240,7 +290,10 @@ class ChatEngine:
         if not isinstance(arguments, dict):
             arguments = {}
 
-        normalized_args = {str(k): str(v) for k, v in arguments.items()}
+        normalized_args = {
+            str(k): ChatEngine._json_safe_value(v)
+            for k, v in arguments.items()
+        }
         return {"name": func_name, "arguments": normalized_args}
 
     @staticmethod
@@ -258,6 +311,20 @@ class ChatEngine:
             args = _parse_tool_arguments(args_str)
             return {"name": func_name, "arguments": args}
 
+        callable_match = re.search(r"\b([A-Za-z_]\w*)\s*\(\s*\{(.*)\}\s*\)", text, re.DOTALL)
+        if callable_match:
+            func_name, args_str = callable_match.group(1), callable_match.group(2)
+            args = _parse_tool_arguments(args_str)
+            if args:
+                return {"name": func_name, "arguments": args}
+
+        partial_callable_match = re.search(r"\b([A-Za-z_]\w*)\s*\(\s*\{(.*)$", text, re.DOTALL)
+        if partial_callable_match:
+            func_name, args_str = partial_callable_match.group(1), partial_callable_match.group(2)
+            args = _parse_tool_arguments(args_str)
+            if args:
+                return {"name": func_name, "arguments": args}
+
         json_tag_match = JSON_TOOL_CALL_RE.search(text)
         if json_tag_match:
             try:
@@ -274,6 +341,21 @@ class ChatEngine:
                 parsed = ChatEngine._parse_tool_payload(json.loads(payload))
                 if parsed:
                     return parsed
+            except json.JSONDecodeError:
+                pass
+
+        paren_payload = ChatEngine._extract_parenthesized_json_payload(text)
+        if paren_payload:
+            tool_name, payload = paren_payload
+            try:
+                arguments = json.loads(payload)
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                normalized_args = {
+                    str(k): ChatEngine._json_safe_value(v)
+                    for k, v in arguments.items()
+                }
+                return {"name": tool_name, "arguments": normalized_args}
             except json.JSONDecodeError:
                 pass
 
@@ -301,6 +383,61 @@ class ChatEngine:
                 pass
 
         return None
+
+    @staticmethod
+    def _extract_parenthesized_json_payload(text: str) -> tuple[str, str] | None:
+        match = PAREN_TOOL_CALL_RE.search(text)
+        if match:
+            tool_name = match.group(1)
+            payload = match.group(2).strip()
+            try:
+                json.loads(payload)
+                return tool_name, payload
+            except json.JSONDecodeError:
+                pass
+
+        line_match = re.search(r"-\s*([A-Za-z_]\w*)\s*\(", text)
+        if not line_match:
+            return None
+
+        tool_name = line_match.group(1)
+        start = text.find("{", line_match.start())
+        if start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escaped = False
+        end = -1
+        for idx in range(start, len(text)):
+            ch = text[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = idx
+                    break
+        if end == -1:
+            return None
+
+        payload = text[start : end + 1].strip()
+        try:
+            json.loads(payload)
+        except json.JSONDecodeError:
+            return None
+        return tool_name, payload
 
     @staticmethod
     def sanitize_response(text: str, force_json: bool = False) -> str:

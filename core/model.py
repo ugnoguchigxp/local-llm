@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+import warnings
 from typing import Any, Generator
 
 DEFAULT_MODEL_PATH = os.getenv("GEMMA4_MODEL", "mlx-community/gemma-4-e4b-it-4bit")
@@ -193,7 +194,14 @@ class MLXModelManager:
 
             from mlx_vlm.utils import load as load_vlm
 
-            self._model, self._tokenizer = load_vlm(target_model)
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"At least one mel filter has all zero values\..*",
+                    category=UserWarning,
+                    module=r"transformers\.audio_utils",
+                )
+                self._model, self._tokenizer = load_vlm(target_model)
             self._model_context_window = _context_window_from_config(
                 getattr(self._model, "config", None)
             ) or _context_window_from_config(
@@ -325,8 +333,9 @@ class MLXModelManager:
                 "max_tokens": max_tokens,
                 "temperature": temperature,
                 "verbose": False,
-                "prefill_step_size": self.prefill_step_size,
             }
+            if self.prefill_step_size is not None:
+                generation_kwargs["prefill_step_size"] = self.prefill_step_size
             if self.mtp_enabled:
                 if self._draft_model is None:
                     raise RuntimeError("MTP is enabled but the draft model is not loaded")
@@ -338,34 +347,64 @@ class MLXModelManager:
                     }
                 )
 
-            for response in vlm_stream_generate(
-                self._model,
-                self._tokenizer,
-                prompt=prompt,
-                **generation_kwargs,
-            ):
-                generation_tokens = getattr(response, "generation_tokens", None)
-                total_tokens = getattr(response, "total_tokens", None)
-                prompt_count = getattr(response, "prompt_tokens", prompt_tokens)
-                if generation_tokens is not None:
-                    self._last_generation_stats = {
-                        "prompt_tokens": int(prompt_count),
-                        "completion_tokens": int(generation_tokens),
-                        "total_tokens": int(
-                            total_tokens or (int(prompt_count) + int(generation_tokens))
-                        ),
-                        "prompt_tps": getattr(response, "prompt_tps", None),
-                        "generation_tps": getattr(response, "generation_tps", None),
-                        "peak_memory_gb": getattr(response, "peak_memory", None),
-                    }
-                chunk = response.text
-                if chunk:
-                    yield chunk
+            def _stream_once(kwargs: dict[str, Any]):
+                return vlm_stream_generate(
+                    self._model,
+                    self._tokenizer,
+                    prompt=prompt,
+                    **kwargs,
+                )
+
+            emitted_any = False
+            fallback_used = False
+
+            def _consume(responses):
+                nonlocal emitted_any
+                for response in responses:
+                    generation_tokens = getattr(response, "generation_tokens", None)
+                    total_tokens = getattr(response, "total_tokens", None)
+                    prompt_count = getattr(response, "prompt_tokens", prompt_tokens)
+                    if generation_tokens is not None:
+                        self._last_generation_stats = {
+                            "prompt_tokens": int(prompt_count),
+                            "completion_tokens": int(generation_tokens),
+                            "total_tokens": int(
+                                total_tokens or (int(prompt_count) + int(generation_tokens))
+                            ),
+                            "prompt_tps": getattr(response, "prompt_tps", None),
+                            "generation_tps": getattr(response, "generation_tps", None),
+                            "peak_memory_gb": getattr(response, "peak_memory", None),
+                        }
+                    chunk = response.text
+                    if chunk:
+                        emitted_any = True
+                        yield chunk
+
+            try:
+                yield from _consume(_stream_once(generation_kwargs))
+            except TypeError as exc:
+                if (
+                    "prefill_step_size" not in str(exc)
+                    or "prefill_step_size" not in generation_kwargs
+                    or emitted_any
+                ):
+                    raise
+                fallback_kwargs = dict(generation_kwargs)
+                fallback_kwargs.pop("prefill_step_size", None)
+                fallback_used = True
+                yield from _consume(_stream_once(fallback_kwargs))
+
+            if fallback_used and self._last_generation_stats is None:
+                self._last_generation_stats = {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": 0,
+                    "total_tokens": prompt_tokens,
+                }
 
     def list_models(self) -> list[dict[str, Any]]:
         visible_ids = []
         for model_id in [self.model_id, DEFAULT_QWEN_MODEL_ID, DEFAULT_BONSAI_MODEL_ID]:
-            if model_id not in visible_ids:
+            if model_id and model_id not in visible_ids:
                 visible_ids.append(model_id)
 
         return [
