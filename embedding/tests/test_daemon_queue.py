@@ -2,12 +2,14 @@ import threading
 import time
 import sys
 import sqlite3
+import os
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from shared import daemon_queue
 from shared.daemon_queue import ServiceProcessLock, SingleWorkerPriorityQueue
 
 
@@ -141,6 +143,35 @@ def test_service_process_lock_blocks_second_acquire(tmp_path):
             second.acquire()
     finally:
         first.release()
+
+
+def test_service_process_lock_recovers_pid_reused_by_unrelated_process(tmp_path, monkeypatch):
+    db_path = tmp_path / "queue.sqlite3"
+    ServiceProcessLock("embedding-daemon", db_path=db_path)
+    stale_pid = 639
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO daemon_service_locks(service_name, pid, acquired_at)
+            VALUES ('embedding-daemon', ?, ?)
+            """,
+            (stale_pid, time.time()),
+        )
+
+    monkeypatch.setattr(daemon_queue, "_pid_alive", lambda pid: pid == stale_pid)
+    monkeypatch.setattr(daemon_queue, "_pid_command", lambda pid: "/System/Library/icdd")
+
+    recovered = ServiceProcessLock("embedding-daemon", db_path=db_path)
+    try:
+        recovered.acquire()
+        with sqlite3.connect(db_path) as conn:
+            row = conn.execute(
+                "SELECT pid FROM daemon_service_locks WHERE service_name = 'embedding-daemon'"
+            ).fetchone()
+        assert row is not None
+        assert row[0] == os.getpid()
+    finally:
+        recovered.release()
 
 
 def test_queue_accepts_directory_db_path(tmp_path):

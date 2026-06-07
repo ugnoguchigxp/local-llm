@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -393,7 +394,10 @@ class ServiceProcessLock:
             ).fetchone()
             if row:
                 existing_pid = int(row["pid"])
-                if _pid_alive(existing_pid):
+                if _pid_alive(existing_pid) and _pid_owns_service(
+                    existing_pid,
+                    self.service_name,
+                ):
                     raise RuntimeError(
                         f"{self.service_name} is already running (pid={existing_pid})"
                     )
@@ -509,6 +513,35 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _pid_command(pid: int) -> str:
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=1,
+        )
+    except Exception:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _pid_owns_service(pid: int, service_name: str) -> bool:
+    if pid == os.getpid():
+        return True
+    command = _pid_command(pid).lower()
+    if not command:
+        return True
+    if service_name == "embedding-daemon":
+        return "e5embed.daemon" in command or "run_embedding_daemon" in command
+    if service_name == "llm-daemon":
+        return "uvicorn api.main:app" in command or "run_openai_api" in command
+    return service_name.lower() in command
 
 
 def _owner_pid(owner: Any) -> int | None:
