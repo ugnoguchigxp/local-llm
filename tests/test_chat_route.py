@@ -20,6 +20,7 @@ class _FakeDaemon:
         self.manager = _FakeManager()
         self._content = content
         self.calls = []
+        self.stream_calls = []
 
     def chat(self, messages, model, max_tokens, temperature, tools=None, priority="normal", timeout=None):
         self.calls.append(
@@ -41,6 +42,19 @@ class _FakeDaemon:
                 "total_tokens": 15,
             },
         }
+
+    def chat_stream(self, messages, model, max_tokens, temperature, tools=None):
+        self.stream_calls.append(
+            {
+                "messages": messages,
+                "model": model,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "tools": tools,
+            }
+        )
+        for piece in ["A", "B"]:
+            yield piece
 
 
 def _build_client(fake_daemon: _FakeDaemon) -> TestClient:
@@ -318,3 +332,25 @@ def test_chat_completion_rejects_invalid_tool_choice():
 
     assert response.status_code == 400
     assert "tool_choice function" in str(response.json().get("detail", ""))
+
+
+def test_chat_completion_streams_from_daemon_without_buffering():
+    fake_daemon = _FakeDaemon("buffered")
+    client = _build_client(fake_daemon)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gemma-4-e4b-it",
+            "messages": [{"role": "user", "content": "stream"}],
+            "stream": True,
+            "tools": None,
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake_daemon.calls == []
+    assert len(fake_daemon.stream_calls) == 1
+    assert '"content": "A"' in response.text
+    assert '"content": "B"' in response.text
+    assert "data: [DONE]" in response.text

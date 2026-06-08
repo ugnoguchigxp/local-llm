@@ -127,7 +127,7 @@ mlx-lm==0.31.3
     #   mlx-vlm
 mlx-metal==0.31.2
     # via mlx
-mlx-vlm==0.5.0
+mlx-vlm==0.6.2
     # via -r requirements.txt
 multidict==6.7.1
     # via
@@ -229,10 +229,11 @@ soupsieve==2.8.3
     # via beautifulsoup4
 sse-starlette==3.3.4
     # via mcp
-starlette==1.0.0
+starlette==1.2.1
     # via
     #   fastapi
     #   mcp
+    #   mlx-vlm
     #   sse-starlette
 tokenizers==0.22.2
     # via transformers

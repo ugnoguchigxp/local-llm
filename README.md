@@ -58,6 +58,26 @@ cp .env.example .env
 curl http://127.0.0.1:44448/v1/models
 ```
 
+## launchd 自動スタート制御
+
+LLM API / embedding daemon の自動スタートを一時的に止める場合:
+
+```bash
+pnpm stop
+```
+
+再開する場合:
+
+```bash
+pnpm start
+```
+
+状態確認:
+
+```bash
+pnpm status
+```
+
 ## MTP ベンチマークと自動切替
 
 同一条件で `MTP OFF/ON` を比較し、`ON` が既定以上速ければ `.env` の `GEMMA4_MTP_ENABLED=true` を自動設定します。

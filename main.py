@@ -175,6 +175,56 @@ class LocalLlmApiClient:
         except ValueError as exc:
             raise RuntimeError("Chat completion request failed: invalid JSON response") from exc
 
+    def stream_chat_completion(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        max_tokens: int,
+        temperature: float,
+        tools: list[dict[str, Any]] | None,
+    ):
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+            "tools": tools,
+            "tool_choice": "auto" if tools else "none",
+        }
+        try:
+            response = requests.post(
+                f"{self.base_url}/v1/chat/completions",
+                headers=self._headers(),
+                json=payload,
+                timeout=self.timeout,
+                stream=True,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Streaming chat completion request failed: {exc}") from exc
+        try:
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            detail = ""
+            try:
+                detail = response.text
+            except Exception:
+                detail = str(exc)
+            raise RuntimeError(f"Streaming chat completion request failed: {detail}") from exc
+
+        for raw_line in response.iter_lines(decode_unicode=True):
+            if not raw_line or not raw_line.startswith("data: "):
+                continue
+            data = raw_line[6:].strip()
+            if data == "[DONE]":
+                break
+            try:
+                event = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            yield event
+
 
 def _parse_arguments(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
@@ -271,6 +321,39 @@ def _run_turn_via_api(
     return "上限に達しました。", {"choices": [{"finish_reason": "length", "message": {"content": "上限に達しました。"}}]}
 
 
+def _run_streaming_turn_via_api(
+    client: LocalLlmApiClient,
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    max_tokens: int,
+    temperature: float,
+) -> tuple[str, dict[str, Any]]:
+    chunks: list[str] = []
+    raw_events: list[dict[str, Any]] = []
+
+    for event in client.stream_chat_completion(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        tools=None,
+    ):
+        raw_events.append(event)
+        choices = event.get("choices") or []
+        if not choices:
+            continue
+        delta = choices[0].get("delta") or {}
+        content = delta.get("content")
+        if isinstance(content, str) and content:
+            chunks.append(content)
+            print(content, end="", flush=True)
+
+    print()
+    answer = "".join(chunks)
+    return answer, {"stream": True, "events": raw_events}
+
+
 def main() -> int:
     if load_dotenv is not None:
         load_dotenv()
@@ -288,6 +371,7 @@ def main() -> int:
     parser.add_argument("--output", choices=["json", "text"], default="text", help="Output format in single-turn mode")
     parser.add_argument("--tools", action=argparse.BooleanOptionalAction, default=True, help="Enable local tools (search_web/fetch_content)")
     parser.add_argument("--max-tool-rounds", type=int, default=4, help="Max local tool rounds")
+    parser.add_argument("--stream", action=argparse.BooleanOptionalAction, default=True, help="Stream text output in text mode")
     parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logs")
 
     # Backward-compatible no-op flags from previous direct-backend CLI.
@@ -327,16 +411,25 @@ def main() -> int:
 
     if prompt is not None:
         messages.append({"role": "user", "content": prompt})
-        answer, raw_response = _run_turn_via_api(
-            client,
-            model=args.model,
-            messages=messages,
-            max_tokens=args.max_tokens,
-            temperature=args.temp,
-            enable_local_tools=args.tools,
-            max_tool_rounds=args.max_tool_rounds,
-            verbose=args.verbose,
-        )
+        if args.stream and args.output == "text" and not args.tools:
+            answer, raw_response = _run_streaming_turn_via_api(
+                client,
+                model=args.model,
+                messages=messages,
+                max_tokens=args.max_tokens,
+                temperature=args.temp,
+            )
+        else:
+            answer, raw_response = _run_turn_via_api(
+                client,
+                model=args.model,
+                messages=messages,
+                max_tokens=args.max_tokens,
+                temperature=args.temp,
+                enable_local_tools=args.tools,
+                max_tool_rounds=args.max_tool_rounds,
+                verbose=args.verbose,
+            )
         messages.append({"role": "assistant", "content": answer})
 
         if not args.no_session and session_id:
@@ -355,7 +448,7 @@ def main() -> int:
                     ensure_ascii=False,
                 )
             )
-        else:
+        elif not (args.stream and args.output == "text" and not args.tools):
             print(answer)
         return 0
 
@@ -378,18 +471,28 @@ def main() -> int:
             break
 
         messages.append({"role": "user", "content": user_input})
-        answer, _raw = _run_turn_via_api(
-            client,
-            model=args.model,
-            messages=messages,
-            max_tokens=args.max_tokens,
-            temperature=args.temp,
-            enable_local_tools=args.tools,
-            max_tool_rounds=args.max_tool_rounds,
-            verbose=args.verbose,
-        )
+        if args.stream and not args.tools:
+            answer, _raw = _run_streaming_turn_via_api(
+                client,
+                model=args.model,
+                messages=messages,
+                max_tokens=args.max_tokens,
+                temperature=args.temp,
+            )
+        else:
+            answer, _raw = _run_turn_via_api(
+                client,
+                model=args.model,
+                messages=messages,
+                max_tokens=args.max_tokens,
+                temperature=args.temp,
+                enable_local_tools=args.tools,
+                max_tool_rounds=args.max_tool_rounds,
+                verbose=args.verbose,
+            )
         messages.append({"role": "assistant", "content": answer})
-        print(answer)
+        if not (args.stream and not args.tools):
+            print(answer)
 
         if not args.no_session and session_id:
             store.save(session_id, messages, args.model, args.api_base)

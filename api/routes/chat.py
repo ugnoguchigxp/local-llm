@@ -189,6 +189,96 @@ async def chat_completions(request: ChatCompletionRequest):
                 detail=f"unexpected daemon error: {exc}",
             ) from exc
 
+    if request.stream and not tool_defs:
+
+        async def live_event_stream() -> AsyncGenerator[str, None]:
+            first_chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_id,
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant"},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            yield f"data: {json.dumps(first_chunk, ensure_ascii=False)}\n\n"
+
+            queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
+
+            def produce() -> None:
+                try:
+                    for piece in daemon.chat_stream(
+                        messages,
+                        requested_model,
+                        max_tokens,
+                        request.temperature,
+                        [],
+                    ):
+                        asyncio.run_coroutine_threadsafe(queue.put(("chunk", piece)), loop)
+                    asyncio.run_coroutine_threadsafe(queue.put(("done", None)), loop)
+                except Exception as exc:
+                    asyncio.run_coroutine_threadsafe(queue.put(("error", str(exc))), loop)
+
+            loop = asyncio.get_running_loop()
+            producer_task = asyncio.create_task(asyncio.to_thread(produce))
+            try:
+                while True:
+                    kind, value = await queue.get()
+                    if kind == "chunk":
+                        content = value or ""
+                        if not content:
+                            continue
+                        chunk = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model_id,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": content},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                        continue
+                    if kind == "error":
+                        chunk = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model_id,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": f"\n[stream error] {value}"},
+                                    "finish_reason": "stop",
+                                }
+                            ],
+                        }
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                        break
+                    break
+            finally:
+                await producer_task
+
+            last_chunk = {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model_id,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }
+            yield f"data: {json.dumps(last_chunk, ensure_ascii=False)}\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(live_event_stream(), media_type="text/event-stream")
+
     result = await run_chat_once()
     raw_content = str(result.get("content", ""))
     parsed_tool_call = parse_tool_call(raw_content, allowed_tool_names=allowed_tool_names)

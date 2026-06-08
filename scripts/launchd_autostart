@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DOMAIN="gui/$(id -u)"
+LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./scripts/launchd_autostart disable [llm|embedding|all]
+  ./scripts/launchd_autostart enable  [llm|embedding|all]
+  ./scripts/launchd_autostart status  [llm|embedding|all]
+
+Examples:
+  ./scripts/launchd_autostart disable all
+  ./scripts/launchd_autostart enable llm
+  ./scripts/launchd_autostart status all
+USAGE
+}
+
+label_for_service() {
+  case "${1}" in
+    llm) echo "com.localLlm.llm" ;;
+    embedding) echo "com.localLlm.embedding" ;;
+    *)
+      echo "Unknown service: ${1}" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+services_for_target() {
+  case "${1}" in
+    all) printf '%s\n' llm embedding ;;
+    llm|embedding) printf '%s\n' "${1}" ;;
+    *)
+      echo "Unknown target: ${1}" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+}
+
+bootout_label() {
+  local label="${1}"
+  local plist="${LAUNCH_AGENTS_DIR}/${label}.plist"
+
+  if [[ -f "${plist}" ]]; then
+    launchctl bootout "${DOMAIN}" "${plist}" >/dev/null 2>&1 || true
+    return
+  fi
+
+  launchctl bootout "${DOMAIN}/${label}" >/dev/null 2>&1 || true
+}
+
+bootstrap_label() {
+  local label="${1}"
+  local plist="${LAUNCH_AGENTS_DIR}/${label}.plist"
+
+  if [[ ! -f "${plist}" ]]; then
+    echo "LaunchAgent plist not found: ${plist}" >&2
+    echo "Enable state was updated, but the job was not loaded." >&2
+    return
+  fi
+
+  launchctl bootstrap "${DOMAIN}" "${plist}" >/dev/null 2>&1 || true
+  launchctl kickstart -k "${DOMAIN}/${label}" >/dev/null 2>&1 || true
+}
+
+print_status() {
+  local label="${1}"
+
+  echo "== ${label} =="
+  if launchctl print "${DOMAIN}/${label}" >/dev/null 2>&1; then
+    echo "loaded: yes"
+  else
+    echo "loaded: no"
+  fi
+
+  if launchctl print-disabled "${DOMAIN}" 2>/dev/null | grep -Eq "\"${label}\" => (true|disabled)"; then
+    echo "autostart: disabled"
+  else
+    echo "autostart: enabled or not explicitly disabled"
+  fi
+}
+
+ACTION="${1:-}"
+TARGET="${2:-all}"
+
+case "${ACTION}" in
+  disable)
+    while IFS= read -r service; do
+      label="$(label_for_service "${service}")"
+      launchctl disable "${DOMAIN}/${label}"
+      bootout_label "${label}"
+      echo "Disabled autostart and stopped job: ${label}"
+    done < <(services_for_target "${TARGET}")
+    ;;
+  enable)
+    while IFS= read -r service; do
+      label="$(label_for_service "${service}")"
+      launchctl enable "${DOMAIN}/${label}"
+      bootstrap_label "${label}"
+      echo "Enabled autostart: ${label}"
+    done < <(services_for_target "${TARGET}")
+    ;;
+  status)
+    while IFS= read -r service; do
+      label="$(label_for_service "${service}")"
+      print_status "${label}"
+    done < <(services_for_target "${TARGET}")
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

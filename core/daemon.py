@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import sys
+import threading
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +29,10 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+_STREAM_SINKS: dict[str, queue.Queue[tuple[str, Any]]] = {}
+_STREAM_SINKS_LOCK = threading.Lock()
 
 
 def _extract_text_content(content: Any) -> str:
@@ -182,6 +189,7 @@ class ChatPayload:
     temperature: float
     tools: list[dict[str, Any]]
     preload_only: bool = False
+    stream_id: str | None = None
 
 
 class LocalLlmDaemon:
@@ -244,6 +252,59 @@ class LocalLlmDaemon:
             effective_timeout = _env_int("LOCAL_LLM_DAEMON_REQUEST_TIMEOUT_MS", 900_000) / 1000
         return self._queue.submit(payload, priority=priority, timeout=effective_timeout)
 
+    def chat_stream(
+        self,
+        messages: list[dict[str, object]],
+        model: str,
+        max_tokens: int,
+        temperature: float,
+        tools: list[dict[str, Any]] | None = None,
+        priority: str = "normal",
+        timeout: float | None = None,
+    ):
+        stream_id = f"stream_{uuid.uuid4().hex}"
+        sink: queue.Queue[tuple[str, Any]] = queue.Queue()
+        with _STREAM_SINKS_LOCK:
+            _STREAM_SINKS[stream_id] = sink
+
+        payload = ChatPayload(
+            messages=messages,
+            model=model,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            tools=tools or [],
+            preload_only=False,
+            stream_id=stream_id,
+        )
+        effective_timeout = timeout
+        if effective_timeout is None:
+            effective_timeout = _env_int("LOCAL_LLM_DAEMON_REQUEST_TIMEOUT_MS", 900_000) / 1000
+
+        def submit() -> None:
+            try:
+                self._queue.submit(payload, priority=priority, timeout=effective_timeout)
+            except Exception as exc:
+                sink.put(("error", str(exc)))
+            finally:
+                sink.put(("done", None))
+
+        worker = threading.Thread(target=submit, name=f"local-llm-{stream_id}", daemon=True)
+        worker.start()
+
+        try:
+            while True:
+                kind, value = sink.get()
+                if kind == "chunk":
+                    yield str(value)
+                    continue
+                if kind == "error":
+                    raise RuntimeError(str(value))
+                break
+        finally:
+            with _STREAM_SINKS_LOCK:
+                _STREAM_SINKS.pop(stream_id, None)
+            worker.join(timeout=0.1)
+
     def health(self) -> dict[str, Any]:
         model_health = self.manager.health()
         return {
@@ -268,6 +329,7 @@ class LocalLlmDaemon:
             temperature = float(payload["temperature"])
             tools = payload.get("tools", [])
             preload_only = bool(payload.get("preload_only", False))
+            stream_id = str(payload.get("stream_id") or "")
         else:
             messages = payload.messages
             model = payload.model
@@ -275,6 +337,7 @@ class LocalLlmDaemon:
             temperature = payload.temperature
             tools = payload.tools
             preload_only = payload.preload_only
+            stream_id = payload.stream_id or ""
 
         if preload_only:
             start = time.perf_counter()
@@ -309,17 +372,32 @@ class LocalLlmDaemon:
                     f"max_prompt_tokens={max_prompt_tokens}"
                 )
 
-            content = "".join(
-                self.manager.generate_stream(
-                    prepared_messages,
-                    model=model,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                )
-            )
+            chunks: list[str] = []
+            stream_sink: queue.Queue[tuple[str, Any]] | None = None
+            if stream_id:
+                with _STREAM_SINKS_LOCK:
+                    stream_sink = _STREAM_SINKS.get(stream_id)
+
+            for chunk in self.manager.generate_stream(
+                prepared_messages,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            ):
+                chunks.append(chunk)
+                if stream_sink is not None:
+                    if chunk:
+                        stream_sink.put(("chunk", chunk))
+
+            content = "".join(chunks)
             self._preload_error = None
         except Exception as exc:
             self._preload_error = str(exc)
+            if stream_id:
+                with _STREAM_SINKS_LOCK:
+                    stream_sink = _STREAM_SINKS.get(stream_id)
+                if stream_sink is not None:
+                    stream_sink.put(("error", str(exc)))
             raise
         finished = time.perf_counter()
         return {
