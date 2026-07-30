@@ -20,9 +20,37 @@
 - `GET /status`
 - `GET /v1/models`
 - `POST /v1/chat/completions`
+- `POST /v1/responses`
 
 `/v1/chat/completions` は `tool_calls` を返せます。  
 ただし **ツール実行はサーバーでは行いません**。ツール実行は呼び出し元クライアントで行ってください。
+
+### コーディングエージェント provider 契約
+
+- `tool_choice: "none"` では tools をモデルへ渡さず、tool call parsing も行いません。
+- `tool_choice: "required"` で tool call が生成されなかった場合は `required_tool_call_missing` を返します。
+- 復元した tool call の `arguments` は、`tools[].function.parameters` の基本 schema（`object` / `required` / `properties` / 基本型）で検証します。
+- schema 不適合の tool call は、同じ schema とエラー理由を添えて 1 回だけ JSON-only retry します。retry 後も不正なら `invalid_tool_arguments` を返します。
+- tools ありの streaming は、生成を一度 buffer してから `delta.tool_calls` と final `finish_reason: "tool_calls"` を返します。tools なしの streaming は daemon から live chunk を返します。
+- parallel tool calls は未対応です。対応するまで、クライアント側では 1 turn 1 tool call 前提で扱ってください。
+- `top_p` と `stop` は API から model manager まで渡します。model profile の stop sequence と重複しない形で後処理します。
+- max token 到達が generation stats から判断できる場合は `finish_reason: "length"` を返します。
+
+### Provider profile
+
+`core/provider_profiles.py` でモデルファミリーごとの provider profile を定義します。
+
+- `gemma`: recommended-after-smoke
+- `qwen`: recommended-after-smoke
+- `bonsai`: experimental
+
+profile は thinking 抑制 instruction、special token sanitize、stop sequence、推奨 `temperature` / `top_p` を持ちます。新しいモデルを追加する場合は、通常チャット性能ではなく次の基準で確認してください。
+
+- tool call JSON が安定している
+- tool result 後の follow-up ができる
+- special token / thinking が表に出ない
+- long context で system/tool 定義を落とさない
+- 量子化後も JSON と patch 生成が崩れにくい
 
 ## セットアップ
 
@@ -44,8 +72,8 @@ cp .env.example .env
 `run_openai_api.sh` は既定で `LOCAL_LLM_GPU_SAFE_MODE=true` として起動し、Metal GPU timeout を避けるために以下を保守設定へ寄せます（未設定時のみ）。
 
 - `LOCAL_LLM_PREFILL_STEP_SIZE=2048`
-- `LOCAL_LLM_CONTEXT_WINDOW=81920`
-- `LOCAL_LLM_MAX_PROMPT_TOKENS=60000`
+- `LOCAL_LLM_CONTEXT_WINDOW=176000`
+- `LOCAL_LLM_MAX_PROMPT_TOKENS=160000`
 - `LOCAL_LLM_MAX_OUTPUT_TOKENS=20000`
 - `LOCAL_LLM_MAX_TOOL_CALL_TOKENS=20000`
 
@@ -56,6 +84,18 @@ cp .env.example .env
 ```bash
 ./scripts/status
 curl http://127.0.0.1:44448/v1/models
+```
+
+provider contract の live smoke:
+
+```bash
+./.venv/bin/python scripts/smoke_provider_contract.py --base-url http://127.0.0.1:44448/v1 --model gemma-4-12b-it-4bit
+```
+
+軽い疎通だけ確認する場合:
+
+```bash
+./.venv/bin/python scripts/smoke_provider_contract.py --base-url http://127.0.0.1:44448/v1 --model gemma-4-12b-it-4bit --checks models,invalid-tool-choice
 ```
 
 ## launchd 自動スタート制御
@@ -135,6 +175,8 @@ CLI は最小ツールとして以下をサポートします。
 - `LOCAL_LLM_MAX_TOOL_CALL_TOKENS`
 - `LOCAL_LLM_PREFILL_STEP_SIZE`
 - `LOCAL_LLM_CONTEXT_WINDOW`
+
+`LOCAL_LLM_CONTEXT_WINDOW` はホストが試験的に許可するコンテキスト上限です。リクエストごとの安全なプロンプト予算は、daemon が `contextWindow - reservedOutputTokens` で計算し、必要な場合は tool result や巨大 JSON など機械的に短縮できる部分だけを圧縮します。圧縮後も超過する場合、API は `context_budget_exceeded` と `contextBudget` メタデータを返します。
 
 ## 認証
 

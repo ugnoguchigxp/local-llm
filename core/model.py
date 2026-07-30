@@ -4,7 +4,10 @@ import os
 import threading
 import time
 import warnings
+from inspect import Parameter, signature
 from typing import Any, Generator
+
+from core.provider_profiles import combined_stop_sequences, get_provider_profile, profile_metadata
 
 DEFAULT_MODEL_PATH = os.getenv("GEMMA4_MODEL", "mlx-community/gemma-4-e4b-it-4bit")
 DEFAULT_MODEL_ID = os.getenv("GEMMA4_API_MODEL_ID", "gemma-4-e4b-it")
@@ -18,7 +21,7 @@ DEFAULT_DRAFT_MODEL_PATH = os.getenv(
 )
 DEFAULT_DRAFT_KIND = os.getenv("GEMMA4_DRAFT_KIND", "mtp")
 DEFAULT_PREFILL_STEP_SIZE = 8192
-DEFAULT_CONTEXT_WINDOW = 131072
+DEFAULT_CONTEXT_WINDOW = 176000
 
 
 def _is_truthy(value: str | None) -> bool:
@@ -222,11 +225,8 @@ class MLXModelManager:
             self._model_path = target_model
 
     def context_window(self) -> int:
-        model_window = self._model_context_window
         configured = self.configured_context_window or DEFAULT_CONTEXT_WINDOW
-        if model_window is None:
-            return configured
-        return min(configured, model_window)
+        return configured
 
     def count_prompt_tokens(
         self,
@@ -259,26 +259,48 @@ class MLXModelManager:
             "draftKind": self.draft_kind if self.mtp_enabled else None,
             "draftBlockSize": self.draft_block_size if self.mtp_enabled else None,
             "prefillStepSize": self.prefill_step_size,
+            "providerProfile": profile_metadata(self._model_path or self.default_model_path),
         }
 
     def _format_prompt(self, messages: list[dict[str, Any]]) -> str:
         if self._tokenizer is None:
             raise RuntimeError("Tokenizer is not loaded")
+        return self._apply_chat_template(messages, tokenize=False)
+
+    def _chat_template_kwargs(self) -> dict[str, Any]:
+        profile = get_provider_profile(self._model_path or self.default_model_path)
+        if profile.name != "qwen" or _is_truthy(os.getenv("LOCAL_LLM_ENABLE_THINKING")):
+            return {}
+        if not self._tokenizer_supports_kwarg("enable_thinking"):
+            return {}
+        return {"enable_thinking": False}
+
+    def _tokenizer_supports_kwarg(self, name: str) -> bool:
+        if self._tokenizer is None:
+            return False
+        try:
+            parameters = signature(self._tokenizer.apply_chat_template).parameters
+        except (TypeError, ValueError):
+            return True
+        return name in parameters or any(
+            parameter.kind == Parameter.VAR_KEYWORD for parameter in parameters.values()
+        )
+
+    def _apply_chat_template(self, messages: list[dict[str, Any]], *, tokenize: bool) -> Any:
+        if self._tokenizer is None:
+            raise RuntimeError("Tokenizer is not loaded")
         return self._tokenizer.apply_chat_template(
             messages,
             add_generation_prompt=True,
-            tokenize=False,
+            tokenize=tokenize,
+            **self._chat_template_kwargs(),
         )
 
     def _count_prompt_tokens(self, messages: list[dict[str, Any]], prompt: str) -> int:
         if self._tokenizer is None:
             raise RuntimeError("Tokenizer is not loaded")
         try:
-            tokenized = self._tokenizer.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                tokenize=True,
-            )
+            tokenized = self._apply_chat_template(messages, tokenize=True)
             count = _token_count_from_encoded(tokenized)
             if count is not None:
                 return count
@@ -310,6 +332,8 @@ class MLXModelManager:
         model: str | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        top_p: float | None = None,
+        stop: list[str] | None = None,
     ) -> Generator[str, None, None]:
         target_model = self.validate_model(model)
         self.ensure_loaded(target_model)
@@ -325,6 +349,7 @@ class MLXModelManager:
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": 0,
                 "total_tokens": prompt_tokens,
+                "finish_reason": "stop",
             }
 
             from mlx_vlm.generate import stream_generate as vlm_stream_generate
@@ -334,6 +359,8 @@ class MLXModelManager:
                 "temperature": temperature,
                 "verbose": False,
             }
+            if top_p is not None:
+                generation_kwargs["top_p"] = top_p
             if self.prefill_step_size is not None:
                 generation_kwargs["prefill_step_size"] = self.prefill_step_size
             if self.mtp_enabled:
@@ -357,13 +384,18 @@ class MLXModelManager:
 
             emitted_any = False
             fallback_used = False
+            stopped_by_sequence = False
+            stop_sequences = combined_stop_sequences(target_model, stop)
 
             def _consume(responses):
-                nonlocal emitted_any
+                nonlocal emitted_any, stopped_by_sequence
                 for response in responses:
                     generation_tokens = getattr(response, "generation_tokens", None)
                     total_tokens = getattr(response, "total_tokens", None)
                     prompt_count = getattr(response, "prompt_tokens", prompt_tokens)
+                    finish_reason = "stop"
+                    if generation_tokens is not None and int(generation_tokens) >= max_tokens:
+                        finish_reason = "length"
                     if generation_tokens is not None:
                         self._last_generation_stats = {
                             "prompt_tokens": int(prompt_count),
@@ -374,23 +406,35 @@ class MLXModelManager:
                             "prompt_tps": getattr(response, "prompt_tps", None),
                             "generation_tps": getattr(response, "generation_tps", None),
                             "peak_memory_gb": getattr(response, "peak_memory", None),
+                            "finish_reason": finish_reason,
                         }
                     chunk = response.text
+                    for stop_sequence in stop_sequences:
+                        if stop_sequence and stop_sequence in chunk:
+                            chunk = chunk.split(stop_sequence, 1)[0]
+                            stopped_by_sequence = True
+                            break
                     if chunk:
                         emitted_any = True
                         yield chunk
+                    if stopped_by_sequence:
+                        self._last_generation_stats = {
+                            **(self._last_generation_stats or {}),
+                            "finish_reason": "stop",
+                        }
+                        return
 
             try:
                 yield from _consume(_stream_once(generation_kwargs))
             except TypeError as exc:
-                if (
-                    "prefill_step_size" not in str(exc)
-                    or "prefill_step_size" not in generation_kwargs
-                    or emitted_any
-                ):
+                removable_keys = [
+                    key for key in ("prefill_step_size", "top_p") if key in generation_kwargs
+                ]
+                matched_key = next((key for key in removable_keys if key in str(exc)), None)
+                if matched_key is None or emitted_any:
                     raise
                 fallback_kwargs = dict(generation_kwargs)
-                fallback_kwargs.pop("prefill_step_size", None)
+                fallback_kwargs.pop(matched_key, None)
                 fallback_used = True
                 yield from _consume(_stream_once(fallback_kwargs))
 
@@ -399,7 +443,10 @@ class MLXModelManager:
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": 0,
                     "total_tokens": prompt_tokens,
+                    "finish_reason": "stop",
                 }
+            elif self._last_generation_stats is not None and "finish_reason" not in self._last_generation_stats:
+                self._last_generation_stats["finish_reason"] = "stop"
 
     def list_models(self) -> list[dict[str, Any]]:
         visible_ids = []

@@ -10,6 +10,14 @@ def test_parse_tool_call_accepts_tool_name():
     assert parsed == {"name": "list_directory", "arguments": {"path": "/tmp"}}
 
 
+def test_parse_tool_call_ignores_thinking_block_before_payload():
+    parsed = parse_tool_call(
+        '<think>{"name":"wrong","arguments":{"path":"/bad"}}</think>'
+        '{"tool_name":"list_directory","arguments":{"path":"/tmp"}}'
+    )
+    assert parsed == {"name": "list_directory", "arguments": {"path": "/tmp"}}
+
+
 def test_parse_tool_call_accepts_function_name_and_args():
     parsed = parse_tool_call('{"function_name":"list_directory","args":{"path":"/tmp"}}')
     assert parsed == {"name": "list_directory", "arguments": {"path": "/tmp"}}

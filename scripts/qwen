@@ -3,7 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
-MODEL="${QWEN_API_MODEL_ID:-qwen-3.6-14b-it}"
+
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+  set -a
+  source "${ROOT_DIR}/.env"
+  set +a
+fi
+
+MODEL="${QWEN_API_MODEL_ID:-qwen-3.5-9b-4bit}"
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
   PYTHON_BIN="python3"

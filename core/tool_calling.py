@@ -322,6 +322,8 @@ def _extract_parenthesized_json_payload(text: str) -> tuple[str, str] | None:
 
 
 def parse_tool_call(text: str, allowed_tool_names: set[str] | None = None) -> dict[str, Any] | None:
+    text = THINK_BLOCK_RE.sub("", text)
+    text = LEGACY_THINK_BLOCK_RE.sub("", text)
     match = TOOL_CALL_RE.search(text)
     if not match:
         match = re.search(r"call:(\w+)\s*\{(.*)\}", text, re.DOTALL)

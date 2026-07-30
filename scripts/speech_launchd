@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DOMAIN="gui/$(id -u)"
+LAUNCH_AGENTS_DIR="${HOME}/Library/LaunchAgents"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./scripts/speech_launchd install
+  ./scripts/speech_launchd start [tts|asr|all]
+  ./scripts/speech_launchd stop [tts|asr|all]
+  ./scripts/speech_launchd restart [tts|asr|all]
+  ./scripts/speech_launchd status [tts|asr|all]
+USAGE
+}
+
+label_for_service() {
+  case "${1}" in
+    tts) echo "com.localLlm.qwen3-tts" ;;
+    asr) echo "com.localLlm.qwen3-asr" ;;
+    *) echo "Unknown service: ${1}" >&2; exit 2 ;;
+  esac
+}
+
+services_for_target() {
+  case "${1}" in
+    all) printf '%s\n' tts asr ;;
+    tts|asr) printf '%s\n' "${1}" ;;
+    *) echo "Unknown target: ${1}" >&2; exit 2 ;;
+  esac
+}
+
+install_plists() {
+  mkdir -p "${LAUNCH_AGENTS_DIR}"
+  mkdir -p "${ROOT_DIR}/.debug"
+  for service in tts asr; do
+    label="$(label_for_service "${service}")"
+    source="${ROOT_DIR}/launchd/${label}.plist"
+    destination="${LAUNCH_AGENTS_DIR}/${label}.plist"
+    sed "s|{{LOCAL_LLM_ROOT}}|${ROOT_DIR}|g" "${source}" > "${destination}"
+    plutil -lint "${destination}"
+    echo "Installed ${destination}"
+  done
+}
+
+start_service() {
+  local label="$1"
+  local plist="${LAUNCH_AGENTS_DIR}/${label}.plist"
+  if [[ ! -f "${plist}" ]]; then
+    echo "Missing ${plist}; run ./scripts/speech_launchd install first." >&2
+    exit 1
+  fi
+  launchctl enable "${DOMAIN}/${label}" >/dev/null 2>&1 || true
+  launchctl bootstrap "${DOMAIN}" "${plist}" >/dev/null 2>&1 || true
+  launchctl kickstart -k "${DOMAIN}/${label}"
+}
+
+stop_service() {
+  local label="$1"
+  local plist="${LAUNCH_AGENTS_DIR}/${label}.plist"
+  launchctl bootout "${DOMAIN}" "${plist}" >/dev/null 2>&1 || \
+    launchctl bootout "${DOMAIN}/${label}" >/dev/null 2>&1 || true
+}
+
+status_service() {
+  local label="$1"
+  echo "== ${label} =="
+  if launchctl print "${DOMAIN}/${label}" >/dev/null 2>&1; then
+    launchctl print "${DOMAIN}/${label}" | awk '
+      /state =/ || /pid =/ || /last exit code =/ { print }
+    '
+  else
+    echo "not loaded"
+  fi
+}
+
+ACTION="${1:-}"
+TARGET="${2:-all}"
+
+case "${ACTION}" in
+  install)
+    install_plists
+    ;;
+  start)
+    while IFS= read -r service; do
+      start_service "$(label_for_service "${service}")"
+    done < <(services_for_target "${TARGET}")
+    ;;
+  stop)
+    while IFS= read -r service; do
+      stop_service "$(label_for_service "${service}")"
+    done < <(services_for_target "${TARGET}")
+    ;;
+  restart)
+    while IFS= read -r service; do
+      label="$(label_for_service "${service}")"
+      stop_service "${label}"
+      start_service "${label}"
+    done < <(services_for_target "${TARGET}")
+    ;;
+  status)
+    while IFS= read -r service; do
+      status_service "$(label_for_service "${service}")"
+    done < <(services_for_target "${TARGET}")
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

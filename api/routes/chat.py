@@ -21,7 +21,10 @@ from api.schemas import (
     create_tool_call_id,
     now_epoch,
 )
-from core.daemon import get_local_llm_daemon
+from api.tool_contract import build_tool_retry_message, resolve_tool_choice, validate_tool_arguments
+from core.provider_profiles import sanitize_for_profile
+from core.context_budget import ContextBudgetExceeded
+from core.daemon import DaemonBusyError, get_local_llm_daemon
 from core.tool_calling import normalize_tool_name, parse_tool_call, sanitize_assistant_text
 
 router = APIRouter(tags=["chat"])
@@ -62,6 +65,25 @@ def _max_tokens_for_request(requested_max_tokens: int, has_tools: bool) -> int:
     return max(1, min(int(requested_max_tokens), cap))
 
 
+def _normalize_stop(stop: str | list[str] | None) -> list[str] | None:
+    if isinstance(stop, str):
+        return [stop] if stop else None
+    if isinstance(stop, list):
+        values = [item for item in stop if isinstance(item, str) and item]
+        return values or None
+    return None
+
+
+def _finish_reason_from_result(result: dict[str, object]) -> str:
+    finish_reason = result.get("finishReason")
+    if finish_reason in {"stop", "length", "content_filter"}:
+        return str(finish_reason)
+    usage = result.get("usage")
+    if isinstance(usage, dict) and usage.get("finish_reason") in {"stop", "length", "content_filter"}:
+        return str(usage["finish_reason"])
+    return "stop"
+
+
 def _append_debug_log(event: dict[str, Any]) -> None:
     log_file = os.getenv("LOCAL_LLM_DEBUG_LOG_FILE", "").strip()
     if not log_file:
@@ -73,42 +95,18 @@ def _append_debug_log(event: dict[str, Any]) -> None:
         return
 
 
+def _context_budget_http_detail(exc: ContextBudgetExceeded) -> dict[str, Any]:
+    return {
+        "code": "context_budget_exceeded",
+        "message": "context_budget_exceeded",
+        "contextBudget": exc.metadata,
+    }
+
+
 def _extract_tool_defs(request: ChatCompletionRequest) -> list[dict[str, Any]]:
     if not request.tools:
         return []
     return [tool.model_dump(mode="python") for tool in request.tools if tool.type == "function"]
-
-
-def _resolve_allowed_tool_names(request: ChatCompletionRequest) -> tuple[set[str], str | None]:
-    tool_choice = request.tool_choice
-    if not request.tools:
-        if isinstance(tool_choice, dict):
-            return set(), "tool_choice requires tools, but no tools were provided"
-        if isinstance(tool_choice, str) and tool_choice.lower() in {"required"}:
-            return set(), "tool_choice=required requires tools, but no tools were provided"
-        return set(), None
-
-    available = {
-        normalize_tool_name(tool.function.name)
-        for tool in request.tools
-        if tool.type == "function" and tool.function.name
-    }
-
-    if isinstance(tool_choice, str):
-        if tool_choice.lower() == "none":
-            return set(), None
-        return available, None
-
-    if isinstance(tool_choice, dict):
-        function = tool_choice.get("function")
-        forced_name = function.get("name") if isinstance(function, dict) else None
-        if isinstance(forced_name, str) and forced_name:
-            normalized = normalize_tool_name(forced_name)
-            if normalized in available:
-                return {normalized}, None
-            return set(), f"tool_choice function '{forced_name}' is not present in tools"
-
-    return available, None
 
 
 def _build_tool_call_response(parsed_tool_call: dict[str, Any]) -> tuple[ToolCall, str]:
@@ -129,6 +127,22 @@ def _build_tool_call_response(parsed_tool_call: dict[str, Any]) -> tuple[ToolCal
     return tool_call, normalized_name
 
 
+def _invalid_tool_arguments_detail(tool_name: str, error: str) -> dict[str, Any]:
+    return {
+        "code": "invalid_tool_arguments",
+        "message": "invalid_tool_arguments",
+        "toolName": tool_name,
+        "error": error,
+    }
+
+
+def _required_tool_missing_detail() -> dict[str, str]:
+    return {
+        "code": "required_tool_call_missing",
+        "message": "tool_choice=required did not produce a tool call",
+    }
+
+
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(request: ChatCompletionRequest):
     daemon = get_local_llm_daemon()
@@ -147,35 +161,36 @@ async def chat_completions(request: ChatCompletionRequest):
     model_id = request.model
 
     messages = [_message_to_dict(message) for message in request.messages]
-    allowed_tool_names, tool_choice_error = _resolve_allowed_tool_names(request)
+    request_tool_defs = _extract_tool_defs(request)
+    tool_defs, allowed_tool_names, tool_choice_mode, tool_choice_error = resolve_tool_choice(
+        request_tool_defs,
+        request.tool_choice,
+    )
     if tool_choice_error:
         raise HTTPException(status_code=400, detail=tool_choice_error)
-    tool_defs = _extract_tool_defs(request)
-    if allowed_tool_names:
-        tool_defs = [
-            tool
-            for tool in tool_defs
-            if normalize_tool_name(str(tool.get("function", {}).get("name", ""))) in allowed_tool_names
-        ]
-    else:
-        tool_defs = []
 
     max_tokens = _max_tokens_for_request(request.max_tokens, has_tools=bool(tool_defs))
 
-    async def run_chat_once() -> dict[str, object]:
+    async def run_chat_once(run_messages: list[dict[str, object]] | None = None) -> dict[str, object]:
         try:
             result = await asyncio.to_thread(
                 daemon.chat,
-                messages,
+                run_messages or messages,
                 requested_model,
                 max_tokens,
                 request.temperature,
                 tool_defs,
+                request.top_p,
+                _normalize_stop(request.stop),
                 request.priority,
             )
             return result
+        except ContextBudgetExceeded as exc:
+            raise HTTPException(status_code=400, detail=_context_budget_http_detail(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except DaemonBusyError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except RuntimeError as exc:
             detail = str(exc)
             if detail.startswith("prompt_too_large:") or detail.startswith("context_length_exceeded:"):
@@ -190,6 +205,8 @@ async def chat_completions(request: ChatCompletionRequest):
             ) from exc
 
     if request.stream and not tool_defs:
+        if daemon.is_busy():
+            raise HTTPException(status_code=503, detail="local-llm daemon is busy")
 
         async def live_event_stream() -> AsyncGenerator[str, None]:
             first_chunk = {
@@ -217,6 +234,8 @@ async def chat_completions(request: ChatCompletionRequest):
                         max_tokens,
                         request.temperature,
                         [],
+                        request.top_p,
+                        _normalize_stop(request.stop),
                     ):
                         asyncio.run_coroutine_threadsafe(queue.put(("chunk", piece)), loop)
                     asyncio.run_coroutine_threadsafe(queue.put(("done", None)), loop)
@@ -280,7 +299,11 @@ async def chat_completions(request: ChatCompletionRequest):
         return StreamingResponse(live_event_stream(), media_type="text/event-stream")
 
     result = await run_chat_once()
+    finish_reason = _finish_reason_from_result(result)
     raw_content = str(result.get("content", ""))
+    context_budget = result.get("contextBudget")
+    if not isinstance(context_budget, dict):
+        context_budget = None
     parsed_tool_call = parse_tool_call(raw_content, allowed_tool_names=allowed_tool_names)
     _append_debug_log(
         {
@@ -300,6 +323,46 @@ async def chat_completions(request: ChatCompletionRequest):
             "raw_prefix": raw_content[:220],
         }
     )
+    if parsed_tool_call:
+        validation_error = validate_tool_arguments(parsed_tool_call, tool_defs)
+        if validation_error:
+            tool_name = normalize_tool_name(str(parsed_tool_call.get("name", "")))
+            retry_result = await run_chat_once(
+                [*messages, build_tool_retry_message(tool_name, validation_error)]
+            )
+            retry_raw_content = str(retry_result.get("content", ""))
+            retry_parsed_tool_call = parse_tool_call(
+                retry_raw_content,
+                allowed_tool_names=allowed_tool_names,
+            )
+            retry_validation_error = (
+                validate_tool_arguments(retry_parsed_tool_call, tool_defs)
+                if retry_parsed_tool_call
+                else "retry did not produce a valid tool call"
+            )
+            if retry_parsed_tool_call and not retry_validation_error:
+                result = retry_result
+                raw_content = retry_raw_content
+                parsed_tool_call = retry_parsed_tool_call
+                finish_reason = _finish_reason_from_result(result)
+            else:
+                validation_error = retry_validation_error or validation_error
+                _append_debug_log(
+                    {
+                        "ts": int(time.time()),
+                        "event": "chat_completions.invalid_tool_arguments_retry_failed",
+                        "model": request.model,
+                        "tool_name": tool_name,
+                        "error": validation_error,
+                        "raw_prefix": retry_raw_content[:220],
+                    }
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=_invalid_tool_arguments_detail(tool_name, validation_error),
+                )
+    elif tool_choice_mode == "required":
+        raise HTTPException(status_code=400, detail=_required_tool_missing_detail())
 
     if request.stream:
 
@@ -359,7 +422,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 yield "data: [DONE]\n\n"
                 return
 
-            content = sanitize_assistant_text(raw_content)
+            content = sanitize_for_profile(sanitize_assistant_text(raw_content), requested_model)
             for idx in range(0, len(content), 24):
                 piece = content[idx : idx + 24]
                 chunk = {
@@ -382,7 +445,7 @@ async def chat_completions(request: ChatCompletionRequest):
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": model_id,
-                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
             }
             yield f"data: {json.dumps(last_chunk, ensure_ascii=False)}\n\n"
             yield "data: [DONE]\n\n"
@@ -418,23 +481,25 @@ async def chat_completions(request: ChatCompletionRequest):
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
             ),
+            contextBudget=context_budget,
         )
 
-    content = sanitize_assistant_text(raw_content)
+    content = sanitize_for_profile(sanitize_assistant_text(raw_content), requested_model)
     return ChatCompletionResponse(
         id=completion_id,
         created=created,
         model=model_id,
         choices=[
-            Choice(
-                index=0,
-                message=ResponseMessage(content=content),
-                finish_reason="stop",
-            )
+                Choice(
+                    index=0,
+                    message=ResponseMessage(content=content),
+                    finish_reason=finish_reason,
+                )
         ],
         usage=Usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
         ),
+        contextBudget=context_budget,
     )

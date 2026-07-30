@@ -72,11 +72,16 @@ class SingleWorkerPriorityQueue(Generic[PayloadT, ResultT]):
         payload: PayloadT,
         priority: str = "normal",
         timeout: float | None = None,
+        reject_when_busy: bool = False,
     ) -> ResultT:
         if priority not in PRIORITIES:
             raise ValueError("priority must be 'high', 'normal', or 'low'")
 
-        queue_id = self._enqueue_payload(payload=payload, priority=priority)
+        queue_id = self._enqueue_payload(
+            payload=payload,
+            priority=priority,
+            reject_when_busy=reject_when_busy,
+        )
         item = QueueItem(payload=payload, queued_at=time.perf_counter())
         self._worker_wakeup.set()
 
@@ -257,10 +262,26 @@ class SingleWorkerPriorityQueue(Generic[PayloadT, ResultT]):
 
             return len(orphaned)
 
-    def _enqueue_payload(self, payload: PayloadT, priority: str) -> int:
+    def _enqueue_payload(self, payload: PayloadT, priority: str, reject_when_busy: bool = False) -> int:
         queued_at = time.perf_counter()
         payload_json = json.dumps(payload, ensure_ascii=False, default=_json_default)
         with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if reject_when_busy:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM daemon_jobs
+                    WHERE queue_name = ?
+                      AND status IN ('queued', 'running')
+                      AND cancelled = 0
+                    """,
+                    (self.name,),
+                ).fetchone()
+                if row and int(row["c"]) > 0:
+                    conn.execute("ROLLBACK")
+                    raise QueueBusyError(f"{self.name} daemon is busy")
+
             cur = conn.execute(
                 """
                 INSERT INTO daemon_jobs (
@@ -269,6 +290,7 @@ class SingleWorkerPriorityQueue(Generic[PayloadT, ResultT]):
                 """,
                 (self.name, PRIORITIES[priority], payload_json, queued_at, self._owner),
             )
+            conn.execute("COMMIT")
             return int(cur.lastrowid)
 
     def _wait_for_result(self, queue_id: int, item: QueueItem[PayloadT, ResultT], timeout: float | None) -> bool:
@@ -445,6 +467,10 @@ class ServiceProcessLock:
                 )
                 """
             )
+
+
+class QueueBusyError(RuntimeError):
+    """Raised when a queue is configured to reject requests while work is active."""
 
 
 def _json_default(value: Any) -> Any:

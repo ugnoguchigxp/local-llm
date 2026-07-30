@@ -85,9 +85,9 @@ def main() -> None:
     assert_equal(bonsai.prefill_step_size, 4096)
     assert_equal(BonsaiBackend().prefill_step_size, 8192)
 
-    manager = MLXModelManager(prefill_step_size=4096)
+    manager = MLXModelManager(prefill_step_size=4096, context_window=176000)
     assert_equal(manager.health()["prefillStepSize"], 4096)
-    assert_equal(manager.health()["contextWindow"], 131072)
+    assert_equal(manager.health()["contextWindow"], 176000)
 
     class FakeTokenizer:
         def apply_chat_template(self, messages, add_generation_prompt, tokenize):

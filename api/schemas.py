@@ -42,6 +42,8 @@ class ChatCompletionRequest(BaseModel):
     messages: list[ChatMessage] = Field(default_factory=list)
     stream: bool = False
     temperature: float = 0.0
+    top_p: float | None = None
+    stop: str | list[str] | None = None
     max_tokens: int = 1024
     tools: list[ChatTool] | None = None
     tool_choice: str | dict[str, Any] | None = None
@@ -73,6 +75,7 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: list[Choice]
     usage: Usage
+    contextBudget: dict[str, Any] | None = None
 
 
 class ModelCard(BaseModel):

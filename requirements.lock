@@ -127,7 +127,7 @@ mlx-lm==0.31.3
     #   mlx-vlm
 mlx-metal==0.31.2
     # via mlx
-mlx-vlm==0.6.2
+mlx-vlm==0.6.3
     # via -r requirements.txt
 multidict==6.7.1
     # via

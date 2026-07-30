@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.localLlm.qwen3-tts</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>cd {{LOCAL_LLM_ROOT}} &amp;&amp; ./scripts/run_qwen3_tts_daemon.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{{LOCAL_LLM_ROOT}}</string>
+    <key>StandardOutPath</key>
+    <string>{{LOCAL_LLM_ROOT}}/.debug/launchd-qwen3-tts.log</string>
+    <key>StandardErrorPath</key>
+    <string>{{LOCAL_LLM_ROOT}}/.debug/launchd-qwen3-tts.log</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+        <key>HF_HUB_OFFLINE</key>
+        <string>1</string>
+        <key>TRANSFORMERS_OFFLINE</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>

@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from shared import daemon_queue
-from shared.daemon_queue import ServiceProcessLock, SingleWorkerPriorityQueue
+from shared.daemon_queue import QueueBusyError, ServiceProcessLock, SingleWorkerPriorityQueue
 
 
 def test_single_worker_priority_queue_processes_one_at_a_time(tmp_path):
@@ -131,6 +131,42 @@ def test_single_worker_priority_queue_skips_timed_out_waiting_items(tmp_path):
     assert gate_error == []
     assert processed == ["gate"]
     assert queue.health()["cancelledCount"] == 1
+
+
+def test_single_worker_priority_queue_can_reject_when_busy(tmp_path):
+    gate = threading.Event()
+    started = threading.Event()
+
+    def handler(item):
+        started.set()
+        if item.payload == "gate":
+            gate.wait(timeout=2)
+        return item.payload
+
+    queue = SingleWorkerPriorityQueue("test", handler, db_path=tmp_path / "queue.sqlite3")
+    first_error = []
+
+    def submit_gate():
+        try:
+            queue.submit("gate", timeout=2)
+        except Exception as exc:  # pragma: no cover - should not happen
+            first_error.append(exc)
+
+    gate_thread = threading.Thread(target=submit_gate)
+    try:
+        gate_thread.start()
+        assert started.wait(timeout=2)
+
+        with pytest.raises(QueueBusyError):
+            queue.submit("second", reject_when_busy=True, timeout=2)
+
+        gate.set()
+        gate_thread.join(timeout=2)
+    finally:
+        queue.shutdown()
+
+    assert first_error == []
+    assert queue.health()["queueSize"] == 0
 
 
 def test_service_process_lock_blocks_second_acquire(tmp_path):

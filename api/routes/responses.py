@@ -9,7 +9,10 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from core.daemon import get_local_llm_daemon
+from api.tool_contract import build_tool_retry_message, resolve_tool_choice, validate_tool_arguments
+from core.context_budget import ContextBudgetExceeded
+from core.daemon import DaemonBusyError, get_local_llm_daemon
+from core.provider_profiles import sanitize_for_profile
 from core.tool_calling import normalize_tool_name, parse_tool_call, sanitize_assistant_text
 
 router = APIRouter(tags=["responses"])
@@ -169,6 +172,49 @@ def _normalize_tool_choice(payload: dict[str, Any]) -> str | dict[str, Any] | No
     return None
 
 
+def _normalize_stop(raw: Any) -> list[str] | None:
+    if isinstance(raw, str):
+        return [raw] if raw else None
+    if isinstance(raw, list):
+        values = [item for item in raw if isinstance(item, str) and item]
+        return values or None
+    return None
+
+
+def _finish_reason_from_result(result: dict[str, object]) -> str:
+    finish_reason = result.get("finishReason")
+    if finish_reason in {"stop", "length", "content_filter"}:
+        return str(finish_reason)
+    usage = result.get("usage")
+    if isinstance(usage, dict) and usage.get("finish_reason") in {"stop", "length", "content_filter"}:
+        return str(usage["finish_reason"])
+    return "stop"
+
+
+def _context_budget_http_detail(exc: ContextBudgetExceeded) -> dict[str, Any]:
+    return {
+        "code": "context_budget_exceeded",
+        "message": "context_budget_exceeded",
+        "contextBudget": exc.metadata,
+    }
+
+
+def _invalid_tool_arguments_detail(tool_name: str, error: str) -> dict[str, Any]:
+    return {
+        "code": "invalid_tool_arguments",
+        "message": "invalid_tool_arguments",
+        "toolName": tool_name,
+        "error": error,
+    }
+
+
+def _required_tool_missing_detail() -> dict[str, str]:
+    return {
+        "code": "required_tool_call_missing",
+        "message": "tool_choice=required did not produce a tool call",
+    }
+
+
 @router.post("/v1/responses")
 async def create_response(payload: dict[str, Any]) -> dict[str, Any]:
     daemon = get_local_llm_daemon()
@@ -185,27 +231,13 @@ async def create_response(payload: dict[str, Any]) -> dict[str, Any]:
     if not messages:
         raise HTTPException(status_code=400, detail="input/messages must not be empty")
 
-    tools = _normalize_tools(payload)
-    allowed_tool_names = {
-        normalize_tool_name(str(tool.get("function", {}).get("name", "")))
-        for tool in tools
-        if isinstance(tool, dict)
-    }
-
-    tool_choice = _normalize_tool_choice(payload)
-    if isinstance(tool_choice, str) and tool_choice.lower() == "none":
-        tools = []
-        allowed_tool_names = set()
-    elif isinstance(tool_choice, dict):
-        forced_name = tool_choice.get("function", {}).get("name")
-        if isinstance(forced_name, str):
-            normalized = normalize_tool_name(forced_name)
-            tools = [
-                tool
-                for tool in tools
-                if normalize_tool_name(str(tool.get("function", {}).get("name", ""))) == normalized
-            ]
-            allowed_tool_names = {normalized}
+    request_tools = _normalize_tools(payload)
+    tools, allowed_tool_names, tool_choice_mode, tool_choice_error = resolve_tool_choice(
+        request_tools,
+        _normalize_tool_choice(payload),
+    )
+    if tool_choice_error:
+        raise HTTPException(status_code=400, detail=tool_choice_error)
 
     max_output_tokens = payload.get("max_output_tokens")
     if max_output_tokens is None:
@@ -220,6 +252,12 @@ async def create_response(payload: dict[str, Any]) -> dict[str, Any]:
         temperature = float(temperature_raw)
     except (TypeError, ValueError):
         temperature = 0.0
+    top_p_raw = payload.get("top_p")
+    try:
+        top_p = float(top_p_raw) if top_p_raw is not None else None
+    except (TypeError, ValueError):
+        top_p = None
+    stop = _normalize_stop(payload.get("stop"))
 
     priority = payload.get("priority", "normal")
     if not isinstance(priority, str):
@@ -233,10 +271,16 @@ async def create_response(payload: dict[str, Any]) -> dict[str, Any]:
             max_output_tokens,
             temperature,
             tools,
+            top_p,
+            stop,
             priority,
         )
+    except ContextBudgetExceeded as exc:
+        raise HTTPException(status_code=400, detail=_context_budget_http_detail(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except DaemonBusyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except TimeoutError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except RuntimeError as exc:
@@ -248,7 +292,11 @@ async def create_response(payload: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"unexpected daemon error: {exc}") from exc
 
     raw_content = str(result.get("content", ""))
-    parsed_tool_call = parse_tool_call(raw_content, allowed_tool_names=allowed_tool_names or None)
+    finish_reason = _finish_reason_from_result(result)
+    context_budget = result.get("contextBudget")
+    if not isinstance(context_budget, dict):
+        context_budget = None
+    parsed_tool_call = parse_tool_call(raw_content, allowed_tool_names=allowed_tool_names)
     _append_debug_log(
         {
             "ts": int(time.time()),
@@ -267,6 +315,54 @@ async def create_response(payload: dict[str, Any]) -> dict[str, Any]:
             "raw_prefix": raw_content[:220],
         }
     )
+    if parsed_tool_call:
+        validation_error = validate_tool_arguments(parsed_tool_call, tools)
+        if validation_error:
+            tool_name = normalize_tool_name(str(parsed_tool_call.get("name", "")))
+            retry_result = await asyncio.to_thread(
+                daemon.chat,
+                [*messages, build_tool_retry_message(tool_name, validation_error)],
+                requested_model_path,
+                max_output_tokens,
+                temperature,
+                tools,
+                top_p,
+                stop,
+                priority,
+            )
+            retry_raw_content = str(retry_result.get("content", ""))
+            retry_parsed_tool_call = parse_tool_call(
+                retry_raw_content,
+                allowed_tool_names=allowed_tool_names,
+            )
+            retry_validation_error = (
+                validate_tool_arguments(retry_parsed_tool_call, tools)
+                if retry_parsed_tool_call
+                else "retry did not produce a valid tool call"
+            )
+            if retry_parsed_tool_call and not retry_validation_error:
+                result = retry_result
+                raw_content = retry_raw_content
+                parsed_tool_call = retry_parsed_tool_call
+                finish_reason = _finish_reason_from_result(result)
+            else:
+                validation_error = retry_validation_error or validation_error
+                _append_debug_log(
+                    {
+                        "ts": int(time.time()),
+                        "event": "responses.invalid_tool_arguments_retry_failed",
+                        "model": requested_model,
+                        "tool_name": tool_name,
+                        "error": validation_error,
+                        "raw_prefix": retry_raw_content[:220],
+                    }
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=_invalid_tool_arguments_detail(tool_name, validation_error),
+                )
+    elif tool_choice_mode == "required":
+        raise HTTPException(status_code=400, detail=_required_tool_missing_detail())
 
     usage = result.get("usage") if isinstance(result.get("usage"), dict) else {}
     input_tokens = int(usage.get("prompt_tokens") or max(1, len(json.dumps(messages, ensure_ascii=False)) // 4))
@@ -294,7 +390,7 @@ async def create_response(payload: dict[str, Any]) -> dict[str, Any]:
         ]
         output_text = ""
     else:
-        text = sanitize_assistant_text(raw_content)
+        text = sanitize_for_profile(sanitize_assistant_text(raw_content), requested_model_path)
         output = [
             {
                 "type": "message",
@@ -324,4 +420,6 @@ async def create_response(payload: dict[str, Any]) -> dict[str, Any]:
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
         },
+        "finish_reason": "tool_calls" if parsed_tool_call else finish_reason,
+        "contextBudget": context_budget,
     }
