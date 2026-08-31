@@ -38,7 +38,7 @@ def main() -> int:
             "POST",
             f"{args.tts_url}/v1/audio/speech",
             json={
-                "model": "qwen3-tts-1.7b-custom-voice",
+                "model": "qwen3-tts-0.6b-custom-voice",
                 "input": "音声認識のストリーミングテストです。",
                 "voice": "ono_anna",
                 "instructions": "落ち着いて明瞭に話してください。",

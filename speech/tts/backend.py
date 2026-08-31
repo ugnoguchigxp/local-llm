@@ -16,7 +16,8 @@ from speech.common.settings import CommonSettings
 from speech.tts.instruct import build_instruct
 from speech.tts.schemas import SpeechRequest
 
-CUSTOM_MODEL_NAME = "Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16"
+PRIMARY_MODEL_ID = "qwen3-tts-0.6b-custom-voice"
+CUSTOM_MODEL_NAME = "Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit"
 BASE_MODEL_NAME = "Qwen3-TTS-12Hz-1.7B-Base-bf16"
 DESIGN_MODEL_NAME = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16"
 
@@ -135,7 +136,7 @@ class FakeTTSBackend:
         results: list[AudioChunk] = []
         for index in range(candidates):
             request = SpeechRequest(
-                model="qwen3-tts-1.7b-custom-voice",
+                model=PRIMARY_MODEL_ID,
                 input=text,
                 voice=f"design_{index}",
                 qwen={
@@ -193,7 +194,7 @@ class MLXTTSBackend:
 
     def warmup(self) -> None:
         request = SpeechRequest(
-            model="qwen3-tts-1.7b-custom-voice",
+            model=PRIMARY_MODEL_ID,
             input="起動確認。",
             voice="ono_anna",
             response_format="pcm",
@@ -342,7 +343,7 @@ class MLXTTSBackend:
         if self._custom is not None and hasattr(self._custom, "get_supported_speakers"):
             speakers = list(self._custom.get_supported_speakers())
         return {
-            "id": "qwen3-tts-1.7b-custom-voice",
+            "id": PRIMARY_MODEL_ID,
             "object": "model",
             "owned_by": "local",
             "backend": "mlx-audio",

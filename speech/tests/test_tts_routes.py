@@ -25,7 +25,7 @@ def test_tts_ready_models_and_pcm_stream(speech_settings) -> None:
             "POST",
             "/v1/audio/speech",
             json={
-                "model": "qwen3-tts-1.7b-custom-voice",
+                "model": "qwen3-tts-0.6b-custom-voice",
                 "input": "音声ストリーミングのテストです。",
                 "voice": "ono_anna",
                 "response_format": "pcm",
@@ -45,7 +45,7 @@ def test_tts_wav_response_has_streaming_header(speech_settings) -> None:
         response = client.post(
             "/v1/audio/speech",
             json={
-                "model": "qwen3-tts-1.7b-custom-voice",
+                "model": "qwen3-tts-0.6b-custom-voice",
                 "input": "WAV出力です。",
                 "voice": "ono_anna",
                 "response_format": "wav",
@@ -63,7 +63,7 @@ def test_tts_rejects_unknown_voice_profile(speech_settings) -> None:
         response = client.post(
             "/v1/audio/speech",
             json={
-                "model": "qwen3-tts-1.7b-custom-voice",
+                "model": "qwen3-tts-0.6b-custom-voice",
                 "input": "テスト",
                 "voice": "voice_missing",
                 "response_format": "pcm",
@@ -151,7 +151,7 @@ def test_tts_requires_known_model_and_valid_style_preset(speech_settings) -> Non
         bad_style = client.post(
             "/v1/audio/speech",
             json={
-                "model": "qwen3-tts-1.7b-custom-voice",
+                "model": "qwen3-tts-0.6b-custom-voice",
                 "input": "テスト",
                 "voice": "ono_anna",
                 "qwen": {"style_preset": "not-a-preset"},
@@ -177,7 +177,7 @@ def test_tts_unhandled_backend_error_has_openai_shape(speech_settings) -> None:
         response = client.post(
             "/v1/audio/speech",
             json={
-                "model": "qwen3-tts-1.7b-custom-voice",
+                "model": "qwen3-tts-0.6b-custom-voice",
                 "input": "テスト",
                 "voice": "ono_anna",
                 "response_format": "pcm",
@@ -206,7 +206,7 @@ def test_tts_buffered_flac_has_duration_metadata(
         response = client.post(
             "/v1/audio/speech",
             json={
-                "model": "qwen3-tts-1.7b-custom-voice",
+                "model": "qwen3-tts-0.6b-custom-voice",
                 "input": "FLAC出力です。",
                 "voice": "ono_anna",
                 "response_format": "flac",

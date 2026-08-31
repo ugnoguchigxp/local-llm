@@ -26,6 +26,7 @@ from speech.tts.audio import (
 )
 from speech.tts.backend import (
     AudioChunk,
+    PRIMARY_MODEL_ID,
     TTSBackend,
     create_tts_backend,
 )
@@ -34,6 +35,7 @@ from speech.tts.voices import VoiceStore, safe_audio_suffix
 
 SUPPORTED_TTS_MODELS = frozenset(
     {
+        PRIMARY_MODEL_ID,
         "qwen3-tts-1.7b-custom-voice",
         "qwen3-tts-1.7b",
     }

@@ -98,6 +98,10 @@ provider contract の live smoke:
 ./.venv/bin/python scripts/smoke_provider_contract.py --base-url http://127.0.0.1:44448/v1 --model gemma-4-12b-it-4bit --checks models,invalid-tool-choice
 ```
 
+Qwen3 TTS / ASR APIの利用方法は
+[`docs/qwen3-speech-api-quickstart.md`](docs/qwen3-speech-api-quickstart.md)
+を参照してください。
+
 ## launchd 自動スタート制御
 
 LLM API / embedding daemon の自動スタートを一時的に止める場合:

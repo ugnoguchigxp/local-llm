@@ -6,7 +6,7 @@ from speech.tts.schemas import SpeechRequest
 
 def test_instruct_combines_free_text_preset_style_and_speed() -> None:
     request = SpeechRequest(
-        model="qwen3-tts-1.7b-custom-voice",
+        model="qwen3-tts-0.6b-custom-voice",
         input="テストです。",
         voice="ono_anna",
         instructions="優しく話してください。",
@@ -30,7 +30,7 @@ def test_instruct_combines_free_text_preset_style_and_speed() -> None:
 
 def test_instruct_is_stable() -> None:
     request = SpeechRequest(
-        model="qwen3-tts-1.7b-custom-voice",
+        model="qwen3-tts-0.6b-custom-voice",
         input="同じ入力",
         voice="ono_anna",
     )

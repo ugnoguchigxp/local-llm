@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "modelId": "ornith-ai/Ornith-1.0-9B-GGUF",
+  "revision": "3296bc7a404871a72ac3f1903f561459c09b5c17",
+  "sourceModelId": "ornith-ai/Ornith-1.0-9B",
+  "sourceRevision": "83dc1f5e24ef8527af019a6b3bf66ac0f1c2c999",
+  "runtime": "mistral.rs-v0.9.2-d184053f2441f897cf81429b98b0d868f4d96ff3",
+  "files": [
+    {
+      "path": "ornith-1.0-9b-Q4_K_M.gguf",
+      "bytes": 5629108704,
+      "sha256": "5720d1f671b4996481274fffe01868c3c36e87c135cc8538471cc7bd6087b106"
+    }
+  ]
+}

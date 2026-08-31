@@ -28,6 +28,9 @@ wheels/
 *.egg
 MANIFEST
 
+# Rust
+/target/
+
 # Virtual Environment
 .venv/
 venv/
@@ -43,6 +46,10 @@ env/
 
 # ML / Heavy data
 models/
+!models/
+!models/manifests/
+!models/manifests/*.json
+/embedding/models/
 *.bin
 *.pt
 *.pth
@@ -102,4 +109,3 @@ temp/
 .project
 .pydevproject
 .settings/
-
