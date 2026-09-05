@@ -28,6 +28,9 @@ wheels/
 *.egg
 MANIFEST
 
+# Node.js
+node_modules/
+
 # Rust
 /target/
 

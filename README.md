@@ -14,6 +14,8 @@
   - ツール実行
   - エージェントループ
 
+Muse Codeを最初の外部Agent Runtimeとし、将来のGrok系Agent、Qwen系Cloudを含むRuntime Gatewayへ拡張する構想は、[`docs/runtime-gateway-concept.md`](docs/runtime-gateway-concept.md)を参照してください。Museの設計と検証条件は、[`docs/muse-agent-runtime-implementation-plan.md`](docs/muse-agent-runtime-implementation-plan.md)と[`docs/providers/muse.md`](docs/providers/muse.md)にまとめています。Muse Runtimeはdefault disabledであり、既存API契約は変更しません。
+
 ## 提供エンドポイント
 
 - `GET /health`
@@ -21,6 +23,9 @@
 - `GET /v1/models`
 - `POST /v1/chat/completions`
 - `POST /v1/responses`
+- `GET /v1/agents/runtimes`
+- `GET /v1/agents/models`
+- `/v1/agents/sessions/*`（Muse Runtime有効時）
 
 `/v1/chat/completions` は `tool_calls` を返せます。  
 ただし **ツール実行はサーバーでは行いません**。ツール実行は呼び出し元クライアントで行ってください。

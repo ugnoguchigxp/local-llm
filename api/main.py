@@ -6,7 +6,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
 
+from agent_runtime.service import get_agent_service, shutdown_agent_service
 from api.auth import require_api_auth
+from api.routes.agents import router as agents_router
 from api.routes.chat import router as chat_router
 from api.routes.models import router as models_router
 from api.routes.responses import router as responses_router
@@ -50,12 +52,13 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        await shutdown_agent_service()
         daemon.shutdown()
 
 
 app = FastAPI(
-    title="Gemma 4 OpenAI-Compatible API",
-    description="Local MLX Gemma 4 served with OpenAI-compatible endpoints.",
+    title="local-llm Runtime Gateway",
+    description="Local OpenAI-compatible model APIs with opt-in external agent runtimes.",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -63,6 +66,7 @@ app = FastAPI(
 app.include_router(models_router, dependencies=[Depends(require_api_auth)])
 app.include_router(chat_router, dependencies=[Depends(require_api_auth)])
 app.include_router(responses_router, dependencies=[Depends(require_api_auth)])
+app.include_router(agents_router, dependencies=[Depends(require_api_auth)])
 
 
 @app.get("/health")
@@ -71,7 +75,7 @@ def health() -> dict[str, object]:
 
 
 @app.get("/status")
-def status() -> dict[str, object]:
+async def status() -> dict[str, object]:
     return {
         "service": "local-llm-api",
         "health": get_local_llm_daemon().health(),
@@ -80,7 +84,10 @@ def status() -> dict[str, object]:
             "models": "/v1/models",
             "chatCompletions": "/v1/chat/completions",
             "responses": "/v1/responses",
+            "agentRuntimes": "/v1/agents/runtimes",
+            "agentModels": "/v1/agents/models",
         },
+        "agents": {"runtimes": await get_agent_service().list_runtimes()},
     }
 
 

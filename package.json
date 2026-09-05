@@ -2,6 +2,8 @@
   "name": "local-llm",
   "private": true,
   "scripts": {
+    "build:muse-bridge": "pnpm --dir bridges/muse run build",
+    "test:muse-bridge": "pnpm --dir bridges/muse run test",
     "start": "./scripts/launchd_autostart enable all",
     "stop": "./scripts/launchd_autostart disable all",
     "status": "./scripts/launchd_autostart status all"

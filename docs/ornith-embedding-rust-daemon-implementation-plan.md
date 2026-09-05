@@ -15,12 +15,20 @@
   `0.999286`、実測 physical footprint は 601 MiB。FP32 は rollback 用に残す。
 - desired state は既存 SQLite の schema 変更を避け、ContextStill の run directory
   に atomic rename で保存する `local-model-desired.json` を採用した。CLI、resident
-  supervisor、`ornithd`の自動復帰処理が同じファイルを読み書きする。
+  supervisor、`ornith`の自動復帰処理が同じファイルを読み書きする。
 - control socket は追加せず、常駐する `context-stilld` の5秒 reconcile と health probe
   で反映する。worker の PID と起動引数は既存 ProcessState repository を利用する。
-- `ornithd` は API を再実装せず、artifact 検証後に Metal 専用ビルドの
+- `ornith` は API を再実装せず、artifact 検証後に Metal 専用ビルドの
   mistral.rs 0.9.2を子processとして監督する薄いRust launcherとした。これにより
   signal転送と128K利用後の32K再起動をPythonなしで行う。
+- Activity Monitorで識別できるよう、実行ファイル名はsupervisor=`ornith`、
+  inference engine=`ornith-engine`、Embedding worker=`embedding`とする。既存の
+  environment-variable prefixとruntime state filenameは互換性のため変更しない。
+- ContextStill側のresident統合を含まないbuildでも検証・常駐運用できるよう、暫定の
+  standalone管理scriptはworkerごとのuser LaunchAgentを作成してよい。ただし
+  ContextStill管理との同時利用は禁止し、`stop`はlabelをdisableして明示的な次回
+  `start`までログインをまたいで停止を維持する。productionの最終ownershipは
+  `context-stilld`だけとする。
 - 実機では `standard` の BF16 KV cache が 32,768 tokens、`long` の F8E4M3
   KV cache が 131,072 tokens として確保されたことを起動ログで確認し、両方で
   Chat Completions の生成を完了した。最終常駐状態は `standard` とする。
@@ -34,14 +42,14 @@
 | 運用方式 | オンデマンドロードではなく常時起動・常時モデルロード |
 | 停止方式 | 明示的な`start`、`stop`、`restart`、`status`を提供 |
 | supervisor | 既存のRust製`context-stilld`を唯一の親プロセスとする |
-| LLM worker | Rust製`ornithd`、mistral.rs + Candle + Metal |
-| Embedding worker | Rust製`embeddingd`、fastembed-rs + ONNX Runtime |
+| LLM worker | Rust製`ornith`、mistral.rs + Candle + Metal |
+| Embedding worker | Rust製`embedding`、fastembed-rs + ONNX Runtime |
 | プロセス分離 | LLMとEmbeddingは別プロセス、同じサービスグループとして管理 |
 | Python | 移行試験中だけ比較用に残し、最終運用では依存も常駐も0にする |
 | Swift/iOS native | 採用しない |
 | LLM標準profile | `standard`、32,768 tokens |
 | LLM長文profile | `long`、131,072 tokens |
-| profile切替 | `ornithd`だけを再起動し、`embeddingd`は継続稼働 |
+| profile切替 | `ornith`だけを再起動し、`embedding`は継続稼働 |
 | MTP | `auto` / `on` / `off`。未評価の`auto`は安全側の`off` |
 | 外部API | 現行portと主要endpointを維持 |
 | launchd | worker個別のLaunchAgentは作らず、`context-stilld`だけを登録 |
@@ -51,12 +59,12 @@
 
 `local-llm`へCargo workspaceを追加し、次の2バイナリを実装する。
 
-1. `ornithd`
+1. `ornith`
    - `Ornith-1.0-9B`をMetalへ常駐ロードする。
    - OpenAI互換のChat CompletionsとResponses APIを提供する。
    - 32Kと128Kのcontext profileを起動時に選ぶ。
    - MTPはmistral.rsの組み込み実装だけを使用する。
-2. `embeddingd`
+2. `embedding`
    - `intfloat/multilingual-e5-small`のONNXモデルを常駐ロードする。
    - 現行`/embed`とOpenAI互換`/v1/embeddings`を提供する。
 
@@ -138,13 +146,13 @@ launchd
        ├─ health aggregation
        ├─ crash recovery
        │
-       ├─ ornithd                           Rust
+       ├─ ornith                            Rust supervisor
        │    127.0.0.1:44448
        │    Axum + Tokio
-       │    mistral.rs v0.9.2 + Candle + Metal
+       │    ornith-engine / mistral.rs v0.9.2 + Candle + Metal
        │    Ornith-1.0-9B UQFF Q4K
        │
-       └─ embeddingd                        Rust
+       └─ embedding                         Rust
             127.0.0.1:44512
             Axum + Tokio
             fastembed-rs + ONNX Runtime
@@ -170,7 +178,7 @@ launchd
 - `local-model` CLIの受付
 - 2 workerをまとめたstatusの返却
 
-### 6.2 `ornithd`
+### 6.2 `ornith`
 
 - Ornith artifactの整合性検証
 - tokenizer、chat template、modelのロード
@@ -179,7 +187,7 @@ launchd
 - tool callとreasoningのresponse変換
 - worker自身のhealth、metrics、graceful shutdown
 
-### 6.3 `embeddingd`
+### 6.3 `embedding`
 
 - ONNX artifactとtokenizerの整合性検証
 - tokenization、mean pooling、L2 normalize
@@ -337,9 +345,9 @@ stopped ── start ──> starting ── ready ──> running
 
 1. configとartifactを検証する。
 2. 両workerのdesired stateを`running`としてatomic保存する。
-3. `embeddingd`をspawnする。
+3. `embedding`をspawnする。
 4. `/health`がreadyになるまで最大30秒待つ。
-5. `ornithd`をspawnする。
+5. `ornith`をspawnする。
 6. `/health`がreadyになるまで最大90秒待つ。
 7. 両方readyの場合だけcommandを成功にする。
 
@@ -350,7 +358,7 @@ stopped ── start ──> starting ── ready ──> running
 `stop all`は次の順で行う。
 
 1. 両workerのdesired stateを`stopped`としてatomic保存する。
-2. `ornithd`、`embeddingd`の順にSIGTERMを送る。
+2. `ornith`、`embedding`の順にSIGTERMを送る。
 3. 各workerはsignal handlerでreadyをfalseにし、新規受付を停止する。
 4. 各workerは実行中requestを最大10秒drainして自発終了する。
 5. supervisorはSIGTERMから最大20秒待つ。
@@ -424,13 +432,13 @@ context-stilld local-model doctor
 - CLIは`run/local-model-desired.json`をatomic renameで更新し、workerを直接spawnしない。
 - residentは最大5秒のreconcileでdesired stateを反映する。resident不在時はexit code 5を返す。
 - `start`はreadyまで、`stop`はprocessとportの消滅まで待つ。
-- `profile set`は設定保存後、`ornithd`だけをrestartする。
+- `profile set`は設定保存後、`ornith`だけをrestartする。
 - `long`はcompleted sequenceを観測するまで自動解放しない。推論完了後、in-flight
   requestとwaiting sequenceが0の状態が30秒続いた時点でdesired profileを
-  `standard`へ更新し、`ornithd`だけを32K設定でrestartする。猶予中の新規requestは
+  `standard`へ更新し、`ornith`だけを32K設定でrestartする。猶予中の新規requestは
   timerをresetする。
 - `--temporary`は現在のsupervisor session中だけ有効で、次のsupervisor再起動時にconfigured profileへ戻す。
-- `mtp set`も`ornithd`だけをrestartする。
+- `mtp set`も`ornith`だけをrestartする。
 - `stop ornith`中もEmbeddingは利用可能とする。
 - 同じ状態への`start` / `stop`は成功する冪等commandとする。
 - `status --json`は自動化用のstable schemaとし、human表示の文言に依存させない。
@@ -451,8 +459,8 @@ context-stilld local-model doctor
 residentはproductionで次の形に正規化してspawnする。workerは`auto`を解釈せず、supervisorが解決したeffective値だけを受け取る。
 
 ```bash
-ornithd \
-  --mistralrs-bin "/absolute/path/to/mistralrs" \
+ornith \
+  --mistralrs-bin "/absolute/path/to/ornith-engine" \
   --model-file "/absolute/path/to/ornith-1.0-9b-Q4_K_M.gguf" \
   --manifest "/absolute/path/to/ornith-manifest.json" \
   --host 127.0.0.1 \
@@ -461,7 +469,7 @@ ornithd \
   --long-idle-seconds 30 \
   --desired-state-file "/absolute/path/to/local-model-desired.json"
 
-embeddingd \
+embedding \
   --host 127.0.0.1 \
   --port 44512 \
   --model-dir "/absolute/path/to/multilingual-e5-small-onnx-qint8" \
@@ -482,7 +490,7 @@ worker exit codeは0=正常終了、2=Clapによる引数不正、1=artifact・r
 
 model自体の上限262,144は公開profileとして使用しない。32GB環境での余裕と他daemon共存を優先する。
 
-profileは`ornithd`起動時のKV cache・PagedAttention設定へ反映する。mistral.rs v0.9.2の`with_max_model_len`はQwen3.5 multimodal loaderを対象にしていないため使用しない。`PagedAttentionMetaBuilder`へ`MemoryGpuConfig::ContextSize(profile.context_window)`を渡してcacheを制限し、API層でも同じprofile上限を検証する。PagedAttentionのcache budgetは起動時に決まるため、profile変更は必ずworker restartとする。
+profileは`ornith`起動時のKV cache・PagedAttention設定へ反映する。mistral.rs v0.9.2の`with_max_model_len`はQwen3.5 multimodal loaderを対象にしていないため使用しない。`PagedAttentionMetaBuilder`へ`MemoryGpuConfig::ContextSize(profile.context_window)`を渡してcacheを制限し、API層でも同じprofile上限を検証する。PagedAttentionのcache budgetは起動時に決まるため、profile変更は必ずworker restartとする。
 
 `long`の自動解放はwall-clockだけで判断しない。mistral.rsの`/metrics`から
 `http_requests_in_flight`、`mistralrs_sequences_waiting`、
@@ -738,9 +746,9 @@ metrics labelへrequest ID、prompt、model path、tokenを入れない。
 
 | 項目 | 上限・条件 |
 |---|---|
-| `embeddingd` FP32 idle | physical footprint 800MiB以下 |
-| `ornithd` standard idle | physical footprint 10GiB以下 |
-| `ornithd` long idle | physical footprint 16GiB以下 |
+| `embedding` FP32 idle | physical footprint 800MiB以下 |
+| `ornith` standard idle | physical footprint 10GiB以下 |
+| `ornith` long idle | physical footprint 16GiB以下 |
 | 両worker standard 30分 | 継続的なswap増加なし |
 | 両worker idle 8時間 | 1時間目以降の増加5%以内 |
 | Embedding warm start | 30秒以内 |
@@ -1079,9 +1087,9 @@ production sourceの1fileは800行未満を必須とする。CIでRust、TypeScr
 
 切替順:
 
-1. `embeddingd`を別portでshadow比較する。
+1. `embedding`を別portでshadow比較する。
 2. EmbeddingだけRustへ切り替えて24時間観測する。
-3. `ornithd`を別portでprovider contract比較する。
+3. `ornith`を別portでprovider contract比較する。
 4. OrnithをMTP off、standardで切り替える。
 5. 24時間後にlong profileを解放する。
 6. benchmark合格後にMTP autoを解放する。
@@ -1114,9 +1122,9 @@ Python fallbackは移行期間だけの安全装置であり、最終リリー�
 
 1. Phase 0 fixtureを先にmergeする。
 2. Phase 1のfake serverと契約testをmergeする。
-3. `embeddingd`を完成させる。
+3. `embedding`を完成させる。
 4. Ornith UQFFのM4 PoCを独立PRで通す。
-5. `ornithd` APIを実装する。
+5. `ornith` APIを実装する。
 6. lifecycle/profileを`context-stilld`へ実装する。
 7. MTPは最後に追加する。
 8. Rust版の受け入れ完了前にPython起動経路を削除しない。

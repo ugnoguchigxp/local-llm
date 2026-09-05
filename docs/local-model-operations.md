@@ -1,16 +1,22 @@
 # Rust local model daemon operations
 
-`embeddingd` and `ornithd` are foreground Rust workers. The resident
-`context-stilld` process owns them; there are no per-worker LaunchAgents and no
-Python worker processes.
+`embedding` and `ornith` are foreground Rust workers with no resident Python
+processes. They can run under either the standalone user LaunchAgents installed
+by this repository or the resident `context-stilld` supervisor. Do not enable
+both ownership modes at the same time.
 
 ## Build and install assets
 
 ```bash
-cargo build --release --workspace
+./scripts/install_rust_daemons.sh
 ./scripts/install_mistralrs.sh
 ./scripts/install_rust_model_assets.sh all
 ```
+
+Configure ContextStill with the stable paths
+`~/Library/Application Support/local-llm/bin/ornith` and
+`~/Library/Application Support/local-llm/bin/embedding`. Compatibility symlinks
+for the former `ornithd` / `embeddingd` paths are installed as well.
 
 Artifacts are installed below
 `~/Library/Application Support/local-llm/models/`. The committed manifests in
@@ -25,12 +31,29 @@ quality-first rollback option.
 
 The mistral.rs binary is built from commit
 `d184053f2441f897cf81429b98b0d868f4d96ff3` with only the Metal backend.
-`ornithd` supervises that Rust process so it can change the context profile
-without starting a Python interpreter.
+It is installed as `ornith-engine`; `mistralrs` remains only as a compatibility
+symlink. `ornith` supervises that Rust process so it can change the context
+profile without starting a Python interpreter.
+
+## Activity Monitor names
+
+- `ornith`: context-profile supervisor
+- `ornith-engine`: Metal inference engine
+- `embedding`: ONNX embedding worker
+
+These are real executable filenames, so Activity Monitor and `ps` show the
+same names. Internal service IDs and existing environment-variable prefixes
+retain the `ornithd` / `embeddingd` spelling for compatibility.
 
 ## Lifecycle
 
 ```bash
+./scripts/manage_rust_model_daemons.sh start
+./scripts/manage_rust_model_daemons.sh status
+./scripts/manage_rust_model_daemons.sh restart
+./scripts/manage_rust_model_daemons.sh stop
+
+# ContextStill-integrated lifecycle, when that supervisor is enabled:
 context-stilld local-model status --json
 context-stilld local-model start all
 context-stilld local-model stop all
@@ -39,9 +62,15 @@ context-stilld local-model profile set long
 context-stilld local-model profile set standard
 ```
 
+The standalone `stop` command unloads and disables both LaunchAgents. They stay
+stopped across logout and login until an explicit standalone `start`. Before
+switching to the ContextStill-integrated lifecycle, run the standalone `stop`
+command first. Stop the ContextStill-managed workers before switching back to
+the standalone lifecycle.
+
 `standard` allocates a 32,768-token cache. `long` allocates 131,072 tokens and
 uses an FP8 KV cache to keep the 128K profile viable on a 32 GB unified-memory
-Mac. After `long` has processed at least one inference, `ornithd` waits until
+Mac. After `long` has processed at least one inference, `ornith` waits until
 there are no in-flight requests or queued sequences. It then keeps a 30-second
 idle grace period and automatically restarts Ornith in `standard`. A new
 request during that grace period resets the timer. Merely selecting `long`
