@@ -70,7 +70,7 @@ test("bridge drives the official SDK against an MSP host", async (context) => {
     expected_fingerprint: EXPECTED_SCHEMA_FINGERPRINT,
     shutdown_timeout_ms: 1000,
     approval_timeout_ms: 100,
-    sdk_version: "0.1.1",
+    sdk_version: "1.3.0",
   });
   assert.equal(initialized.ok, true);
   assert.equal(initialized.result?.["schema_fingerprint"], EXPECTED_SCHEMA_FINGERPRINT);
@@ -91,6 +91,7 @@ test("bridge drives the official SDK against an MSP host", async (context) => {
     command_id: "018f6a1e-9b3c-7c21-a54a-2f30bd3c9f10",
   });
   assert.equal(session.result?.["native_session_id"], "native-session");
+  assert.equal(session.result?.["view_cursor"], "");
   const resumed = await request("session.resume", {
     native_session_id: "native-session",
     cursor: "c0",
@@ -189,6 +190,10 @@ for await (const line of input) {
   if (frame.method === undefined) continue;
   if (frame.method === "initialized") continue;
   if (frame.method === "initialize") {
+    if (!/^[a-z0-9_]+$/.test(frame.params?.clientInfo?.name ?? "")) {
+      send({ jsonrpc: "2.0", id: frame.id, error: { code: -32602, message: "clientInfo.name must be a machine identifier" } });
+      continue;
+    }
     send({ jsonrpc: "2.0", id: frame.id, result: {
       experimentalApi: false,
       grantedCapabilities: [],
@@ -206,8 +211,12 @@ for await (const line of input) {
     send({ jsonrpc: "2.0", id: frame.id, result: { providerId: "provider-a", profileId: null, source: "fakeCatalog", models: [{ providerId: "provider-a", modelId: "model-a", displayLabel: "Model A", isActive: false, isDefault: true, contextLimit: 1000, outputLimit: 100, cost: null, profileId: null, releaseDate: null, description: null }] }});
     continue;
   }
+  if (frame.method === "session/read") {
+    send({ jsonrpc: "2.0", id: frame.id, result: { session: { sessionId: "native-session", status: "idle" }, viewCursor: "c0", pendingRequests: [], history: { mode: "none" } } });
+    continue;
+  }
   if (frame.method === "session/start") {
-    send({ jsonrpc: "2.0", id: frame.id, result: { session: { sessionId: "native-session", status: "idle", modelId: "model-a", providerId: "provider-a" }, viewCursor: "c0" }});
+    send({ jsonrpc: "2.0", id: frame.id, result: { session: { sessionId: "native-session", status: "idle", modelId: "model-a", providerId: "provider-a" }, viewCursor: "" }});
     continue;
   }
   if (frame.method === "session/resume") {
@@ -216,7 +225,7 @@ for await (const line of input) {
   }
   if (frame.method === "turn/start") {
     send({ jsonrpc: "2.0", id: 900, method: "approval/request", params: { sessionId: "native-session", turnId: "native-turn", viewCursor: "c1a", approvalId: "approval-user", currentRequirementId: { approvalId: "approval-user", sourceIndex: 1 }, availableChoices: [{ choiceId: "allow-user", decision: "approved", scope: "once" }, { choiceId: "deny-user", decision: "denied", scope: "once" }] } });
-    send({ jsonrpc: "2.0", id: 901, method: "approval/request", params: { sessionId: "native-session", turnId: "native-turn", viewCursor: "c1b", approvalId: "approval-timeout", currentRequirementId: { approvalId: "approval-timeout", sourceIndex: 1 }, availableChoices: [{ choiceId: "deny-timeout", decision: "denied", scope: "once" }] } });
+    send({ jsonrpc: "2.0", id: 901, method: "approval/request", params: { sessionId: "native-session", turnId: "native-turn", viewCursor: "c1b", approvalId: "approval-timeout", currentRequirementId: { approvalId: "approval-timeout", sourceIndex: 1 }, availableChoices: [{ choiceId: "deny-timeout", decision: "abort", scope: "once" }] } });
     send({ jsonrpc: "2.0", id: 902, method: "userInput/request", params: { sessionId: "native-session", turnId: "native-turn", viewCursor: "c1c", userInputId: "input-user", questions: [{ id: "question-1", header: "Answer", question: "Answer?", options: [], selection: { mode: "single", minSelections: 0, maxSelections: 1 } }] } });
     send({ jsonrpc: "2.0", id: frame.id, result: { commandId: frame.params.commandId, status: "accepted", disposition: "started", startedNewTurn: true, turnId: "native-turn" }});
     send({ jsonrpc: "2.0", method: "turn/started", params: { sessionId: "native-session", turnId: "native-turn", commandId: frame.params.commandId, sourceRange: { first: 1, last: 1 }, viewCursor: "c1" } });
@@ -229,7 +238,7 @@ for await (const line of input) {
   if (frame.method === "approval/decide") {
     if (frame.params.approvalId === "approval-user" && approvalUserStage === 1) {
       approvalUserStage = 2;
-      send({ jsonrpc: "2.0", method: "approval/updated", params: { sessionId: "native-session", approvalId: "approval-user", viewCursor: "c5a", currentRequirementId: { approvalId: "approval-user", sourceIndex: 2 }, availableChoices: [{ choiceId: "allow-user-2", decision: "approved", scope: "once" }, { choiceId: "deny-user-2", decision: "denied", scope: "once" }], subject: { kind: "tool" }, sourceRange: { first: 4, last: 4 } } });
+      send({ jsonrpc: "2.0", method: "approval/updated", params: { sessionId: "native-session", approvalId: "approval-user", viewCursor: "c5a", currentRequirementId: { approvalId: "approval-user", sourceIndex: 2 }, availableChoices: [{ choiceId: "allow-user-2", decision: "approved", scope: "once" }, { choiceId: "deny-user-2", decision: "abort", scope: "once" }], subject: { kind: "tool" }, sourceRange: { first: 4, last: 4 } } });
       send({ jsonrpc: "2.0", id: frame.id, result: { approvalId: frame.params.approvalId, commandId: frame.params.commandId, status: "accepted", terminal: false } });
       continue;
     }

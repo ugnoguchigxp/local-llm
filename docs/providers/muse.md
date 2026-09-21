@@ -2,7 +2,7 @@
 
 ## 状態
 
-Muse Agent RuntimeのGateway実装とmock/MSP fixtureテストは利用可能です。実Muse subscriptionによるPhase 0検証は、この端末へMuse binaryを導入し、専用profileでログインしてから実施します。
+Muse Agent RuntimeのGateway実装、mock/MSP fixtureテスト、Muse Code 1.3.0とのhandshake、モデル一覧取得は検証済みです。subscription quotaを消費するlive smokeは、明示的に許可した場合だけ実施します。
 
 Runtimeは初期状態で無効です。課金経路、schema fingerprint、provider/model、approval modeの検証証跡が一致しない限り、turnを開始しません。
 
@@ -14,9 +14,23 @@ pnpm run build:muse-bridge
 pnpm run test:muse-bridge
 ```
 
-`@muse-code/sdk`は`0.1.1`へ固定しています。Node.js 20以上が必要です。
+`@muse-code/sdk`は`1.3.0`へ固定しています。Node.js 20以上が必要です。
 
-## 2. Museを専用profileへ設定する
+## 2. Museのログインと保存先を設定する
+
+既に通常のMuse CLIへログイン済みなら、そのOAuthログインを再利用できます。認証情報をコピーしたり、再ログインしたりする必要はありません。
+
+```bash
+LOCAL_LLM_MUSE_REUSE_CLI_LOGIN=true
+LOCAL_LLM_MUSE_CLI_CONFIG_HOME=/absolute/path/to/.config
+LOCAL_LLM_MUSE_PROFILE_ROOT=/absolute/path/to/muse-profile
+```
+
+この構成では、macOS Keychainの参照に必要なユーザーのHOMEを維持し、Museのセッションとキャッシュは`XDG_DATA_HOME`で専用profileへ分離します。`CLI_CONFIG_HOME`は`muse/auth.json`を含む設定ディレクトリの親です。OAuthログイン以外の認証方式は拒否し、環境変数のPAYG API keyも継承しません。
+
+専用profileは権限`0700`で作成してください。初回のモデル一覧が空の場合は、同じログイン・保存先構成で公式CLIを一度起動し、provider catalogの取得を完了させてから再確認します。
+
+別のログインを分けて使用する場合だけ、次の専用profile認証を行います。
 
 Muse Code公式手順でMuse binaryを導入してください。認証はlocal-llm専用のprofile rootを`HOME`として使用し、公式CLIの対話的ログイン手順をユーザー自身が実行します。
 
@@ -117,6 +131,8 @@ SSE購読にはsession単位の上限と購読者別queue上限があります�
 sessionをreleaseすると既存のSSE購読も終了します。Bridgeの出力待ちと未処理requestにも上限があり、呼び出し元が読み取れない状態ではmemoryを増やし続けず、retry可能なoverloadとして停止します。
 
 `release`はProvider historyの削除ではありません。`view/unsubscribe`でGatewayの購読を解除し、後で明示的にresumeできます。
+
+release後のresumeでは、返された新しい`cursor`から購読してください。Muse 1.0.3のlive delta cursorは購読解除後に履歴anchorとして使えない場合があります。実行中のturnがないrelease済みsessionは新しいheadへ接続し直し、障害復旧中のsessionでは欠落イベントの再取得を引き続き要求します。
 
 ## 6. Live smoke
 

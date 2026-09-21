@@ -17,6 +17,7 @@ from core.context_budget import (
     compress_messages,
 )
 from core.model import MLXModelManager, get_model_manager
+from core.local_inference import local_inference_enabled
 from core.provider_profiles import get_provider_profile
 
 try:
@@ -380,9 +381,11 @@ class LocalLlmDaemon:
 
     def health(self) -> dict[str, Any]:
         model_health = self.manager.health()
+        enabled = local_inference_enabled()
         return {
-            "status": "ok" if model_health["loaded"] and self._preload_error is None else "loading",
-            "ready": bool(model_health["loaded"] and self._preload_error is None),
+            "status": "disabled" if not enabled else ("ok" if model_health["loaded"] and self._preload_error is None else "loading"),
+            "enabled": enabled,
+            "ready": bool(enabled and model_health["loaded"] and self._preload_error is None),
             "startedAt": int(self._started_at),
             "preloadError": self._preload_error,
             **model_health,

@@ -1,4 +1,4 @@
-import { isRecord } from "./protocol.js";
+import { isDenialDecision, isRecord } from "./protocol.js";
 import { redactValue } from "./redact.js";
 
 const MAX_TRACKED_ITEMS = 10_000;
@@ -16,7 +16,7 @@ function approvalChoices(value: unknown): string[] {
   const choices = new Set<string>();
   for (const candidate of value) {
     if (!isRecord(candidate)) continue;
-    if (candidate["decision"] === "denied") choices.add("deny");
+    if (isDenialDecision(candidate["decision"])) choices.add("deny");
     if (candidate["decision"] === "approved" && candidate["scope"] === "once") {
       choices.add("allow_once");
     }

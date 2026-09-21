@@ -12,6 +12,7 @@ import type { MspHandshake, SpawnedMspConnection } from "@muse-code/sdk";
 import { EventMapper } from "./event_mapper.js";
 import {
   BridgeRequestError,
+  isDenialDecision,
   isRecord,
   optionalString,
   parseBridgeRequest,
@@ -23,7 +24,7 @@ import {
 import { redactText, redactValue } from "./redact.js";
 
 const BRIDGE_VERSION = 1;
-const SDK_VERSION = "0.1.1";
+const SDK_VERSION = "1.3.0";
 const MAX_LINE_BYTES = 10 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BUFFER = 64 * 1024;
 const MAX_PENDING_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -137,7 +138,7 @@ async function denyTimedOutApproval(key: string): Promise<void> {
   const pending = approvals.get(key);
   if (pending === undefined || pending.resolving || !isRecord(pending.requirementId)) return;
   const choice = pending.choices.find(
-    (candidate) => isRecord(candidate) && candidate["decision"] === "denied" && typeof candidate["choiceId"] === "string",
+    (candidate) => isRecord(candidate) && isDenialDecision(candidate["decision"]) && typeof candidate["choiceId"] === "string",
   );
   if (!isRecord(choice) || typeof choice["choiceId"] !== "string") {
     process.stderr.write(`Approval ${redactText(pending.approvalId)} timed out, but Muse offered no deny choice.\n`);
@@ -277,7 +278,7 @@ async function initialize(params: Record<string, unknown>): Promise<Record<strin
   attachHandlers(pending);
   try {
     host = await pending.initialize({
-      clientInfo: { name: "local-llm-muse-bridge", version: "0.1.0" },
+      clientInfo: { name: "local_llm_muse_bridge", version: "0.1.0" },
     });
   } catch (error) {
     await pending.close().catch(() => undefined);
@@ -355,10 +356,11 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
     rejectUnknownFields(params, ["native_session_id", "cursor", "command_id"], method);
     const commandId = requireString(params, "command_id", method);
     const nativeSessionId = requireString(params, "native_session_id", method);
-    const cursor = optionalString(params, "cursor", method);
+    optionalString(params, "cursor", method);
     const result = await connection.command(
       "session/resume",
-      { sessionId: nativeSessionId, excludeItems: true, ...(cursor === undefined ? {} : { cursor }) },
+      // History is paged separately by the gateway; a live cursor need not be a retained anchor.
+      { sessionId: nativeSessionId, excludeItems: true },
       { commandId, maxAttempts: 1 },
     );
     return sessionResult(result, commandId);
@@ -373,10 +375,23 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
   if (method === "turn.start") {
     rejectUnknownFields(params, ["native_session_id", "text", "command_id"], method);
     const commandId = requireString(params, "command_id", method);
+    const sessionId = requireString(params, "native_session_id", method);
+    // The terminal notification can precede the host's idle transition.
+    // Read the current state before admitting another command to avoid a hidden queue.
+    const snapshot = await connection.request("session/read", { sessionId, excludeItems: true });
+    if (!isRecord(snapshot.session)) {
+      throw new BridgeRequestError("protocol_error", "session/read returned an invalid session.");
+    }
+    if (snapshot.session["status"] !== "idle") {
+      throw new BridgeRequestError("commandRejected", "Muse session is not idle yet; retry after it settles.", {
+        retryable: true,
+        data: { reason: "session_busy" },
+      });
+    }
     const result = await connection.command(
       "turn/start",
       {
-        sessionId: requireString(params, "native_session_id", method),
+        sessionId,
         input: [{ type: "text", text: requireString(params, "text", method) }],
         ifBusy: "queue",
       },
@@ -384,7 +399,9 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
     );
     requireAcceptedCommand(result, commandId, method);
     if (requireResultString(result, "disposition", method) !== "started" || result["startedNewTurn"] !== true) {
-      throw new BridgeRequestError("sessionStreamMismatch", "turn.start did not start a fresh turn.");
+      throw new BridgeRequestError("sessionStreamMismatch", "turn.start did not start a fresh turn.", {
+        data: { disposition: result["disposition"], startedNewTurn: result["startedNewTurn"] },
+      });
     }
     return {
       native_turn_id: requireResultString(result, "turnId", method),
@@ -448,7 +465,7 @@ function sessionResult(result: Record<string, unknown>, commandId: string): Reco
   }
   return {
     native_session_id: requireResultString(session, "sessionId", "session result"),
-    view_cursor: requireResultString(result, "viewCursor", "session result"),
+    view_cursor: requireResultString(result, "viewCursor", "session result", true),
     status,
     model_id: typeof session["modelId"] === "string" ? session["modelId"] : null,
     provider_id: typeof session["providerId"] === "string" ? session["providerId"] : null,
@@ -480,7 +497,7 @@ async function decideApproval(
   const choice = pending.choices.find((candidate) => {
     if (!isRecord(candidate)) return false;
     if (decision === "allow_once") return candidate["scope"] === "once" && candidate["decision"] === "approved";
-    return decision === "deny" && candidate["decision"] === "denied";
+    return decision === "deny" && isDenialDecision(candidate["decision"]);
   });
   if (!isRecord(choice) || typeof choice["choiceId"] !== "string") {
     throw new BridgeRequestError("approvalChoiceInvalid", `Muse did not offer a ${decision} choice.`);
@@ -552,9 +569,9 @@ async function answerUserInput(
   return result;
 }
 
-function requireResultString(value: Record<string, unknown>, key: string, where: string): string {
+function requireResultString(value: Record<string, unknown>, key: string, where: string, allowEmpty = false): string {
   const member = value[key];
-  if (typeof member !== "string" || member.length === 0) {
+  if (typeof member !== "string" || (!allowEmpty && member.length === 0)) {
     throw new BridgeRequestError("protocol_error", `${where}.${key} is invalid.`);
   }
   return member;

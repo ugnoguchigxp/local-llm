@@ -37,6 +37,10 @@ class MuseRuntime:
                 billing_mode="subscription",
                 auth=self._status.auth,
                 protocol_fingerprint=self._status.protocol_fingerprint,
+                protocol_name="msp",
+                protocol_version="1",
+                host_version=self._status.host_version,
+                billing_assurance="operator_attested",
                 detail="Muse host exited; existing sessions require explicit resume",
             )
         return RuntimeStatus(
@@ -45,6 +49,10 @@ class MuseRuntime:
             billing_mode="subscription",
             auth=self._status.auth,
             protocol_fingerprint=self._status.protocol_fingerprint,
+            protocol_name="msp",
+            protocol_version="1",
+            host_version=self._status.host_version,
+            billing_assurance="operator_attested",
             active_sessions=len(self._active_sessions),
             active_turns=len(self._active_turns),
             detail=self._status.detail,
@@ -129,6 +137,10 @@ class MuseRuntime:
                 billing_mode="subscription",
                 auth="verified",
                 protocol_fingerprint=fingerprint,
+                protocol_name="msp",
+                protocol_version="1",
+                host_version=result.get("server_version"),
+                billing_assurance="operator_attested",
             )
 
     async def list_models(self) -> list[AgentModel]:
@@ -216,6 +228,9 @@ class MuseRuntime:
         native_session_id: str,
         cursor: str | None,
         command_id: str,
+        workspace_root: str | None = None,
+        model_id: str | None = None,
+        provider_id: str | None = None,
     ) -> NativeSession:
         bridge = await self._ready_bridge()
         if (
@@ -415,7 +430,7 @@ class MuseRuntime:
     def _native_event(self, frame: dict[str, Any]) -> NativeEvent:
         event_type = _required_string(frame, "type", "Muse event")
         session_id = _required_string(frame, "native_session_id", "Muse event")
-        native_cursor = _required_string(frame, "native_cursor", "Muse event")
+        native_cursor = _required_string(frame, "native_cursor", "Muse event", allow_empty=True)
         turn_id = frame.get("native_turn_id")
         data = frame.get("data")
         if turn_id is not None and (not isinstance(turn_id, str) or not turn_id):
@@ -440,9 +455,9 @@ class MuseRuntime:
         self._status = RuntimeStatus(id=self.id, status="configured")
 
 
-def _required_string(value: dict[str, Any], key: str, where: str) -> str:
+def _required_string(value: dict[str, Any], key: str, where: str, *, allow_empty: bool = False) -> str:
     member = value.get(key)
-    if not isinstance(member, str) or not member:
+    if not isinstance(member, str) or (not allow_empty and not member):
         raise _protocol_error(f"{where} has an invalid {key}.")
     return member
 
@@ -486,7 +501,7 @@ def _native_session(result: dict[str, Any], where: str) -> NativeSession:
         raise _protocol_error(f"{where} returned an unsupported session status.")
     return NativeSession(
         session_id=_required_string(result, "native_session_id", where),
-        view_cursor=_required_string(result, "view_cursor", where),
+        view_cursor=_required_string(result, "view_cursor", where, allow_empty=True),
         status=status,
         model_id=result.get("model_id") if isinstance(result.get("model_id"), str) else None,
         provider_id=result.get("provider_id") if isinstance(result.get("provider_id"), str) else None,

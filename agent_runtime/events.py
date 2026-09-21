@@ -133,6 +133,7 @@ class EventBroker:
         self._history: dict[str, deque[AgentEvent]] = defaultdict(deque)
         self._history_sizes: dict[str, deque[int]] = defaultdict(deque)
         self._history_bytes: dict[str, int] = defaultdict(int)
+        self._history_starts: dict[str, str] = {}
         self._subscribers: dict[str, set[asyncio.Queue[QueueItem]]] = defaultdict(set)
         self._max_events_per_session = max_events_per_session
         self._queue_size = queue_size
@@ -140,6 +141,10 @@ class EventBroker:
         self._max_event_bytes = max_event_bytes
         self._max_history_bytes_per_session = max_history_bytes_per_session
         self._lock = asyncio.Lock()
+
+    async def mark_history_start(self, session_id: str, cursor: str) -> None:
+        async with self._lock:
+            self._history_starts[session_id] = cursor
 
     def validate_event(self, event: AgentEvent) -> int:
         try:
@@ -178,6 +183,7 @@ class EventBroker:
                 > self._max_history_bytes_per_session
             ):
                 history.popleft()
+                self._history_starts.pop(event.session_id, None)
                 self._history_bytes[event.session_id] -= sizes.popleft()
             subscribers = list(self._subscribers[event.session_id])
         overflowed: list[asyncio.Queue[QueueItem]] = []
@@ -212,10 +218,12 @@ class EventBroker:
                 )
             history = list(self._history[session_id])
             self._subscribers[session_id].add(queue)
-        if after_cursor is None:
-            return history, queue, True
-        if after_cursor == base_cursor:
-            return history, queue, True
+        if after_cursor is None or after_cursor == base_cursor:
+            complete = (
+                session_id in self._history_starts
+                and self._history_starts[session_id] == base_cursor
+            )
+            return history, queue, complete
         for index, event in enumerate(history):
             if event.native_cursor == after_cursor:
                 return history[index + 1 :], queue, True
@@ -257,6 +265,7 @@ class EventBroker:
             self._history.pop(session_id, None)
             self._history_sizes.pop(session_id, None)
             self._history_bytes.pop(session_id, None)
+            self._history_starts.pop(session_id, None)
             subscribers = list(self._subscribers.pop(session_id, ()))
         for queue in subscribers:
             if queue.full():

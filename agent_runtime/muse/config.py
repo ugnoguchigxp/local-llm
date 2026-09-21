@@ -11,7 +11,7 @@ from typing import Any
 from shared.auth import is_truthy
 
 
-EXPECTED_SDK_VERSION = "0.1.1"
+EXPECTED_SDK_VERSION = "1.3.0"
 MAX_BILLING_EVIDENCE_BYTES = 64 * 1024
 _BILLING_EVIDENCE_FIELDS = {
     "schema_version",
@@ -118,6 +118,8 @@ class MuseConfig:
     approval_timeout_ms: int
     max_sessions: int
     debug_log: bool
+    reuse_cli_login: bool = False
+    cli_config_home: Path | None = None
 
     @classmethod
     def from_env(cls, repo_root: Path | None = None) -> MuseConfig:
@@ -168,6 +170,11 @@ class MuseConfig:
             ),
             max_sessions=_positive_int("LOCAL_LLM_MUSE_MAX_SESSIONS", 2, 64),
             debug_log=is_truthy(os.getenv("LOCAL_LLM_MUSE_DEBUG_LOG"), default=False),
+            reuse_cli_login=is_truthy(os.getenv("LOCAL_LLM_MUSE_REUSE_CLI_LOGIN"), default=False),
+            cli_config_home=_path_env(
+                "LOCAL_LLM_MUSE_CLI_CONFIG_HOME",
+                Path(os.getenv("XDG_CONFIG_HOME") or Path.home() / ".config"),
+            ),
         )
 
     def resolved_binary(self) -> str | None:
@@ -227,9 +234,30 @@ class MuseConfig:
             return None, "LOCAL_LLM_MUSE_APPROVAL_MODE must be verified and explicitly configured"
         if evidence.approval_mode != self.native_approval_mode:
             return None, "Configured Muse approval mode is not covered by billing evidence"
+        if self.reuse_cli_login:
+            error = self._cli_login_error()
+            if error:
+                return None, error
         if not evidence.verified_at:
             return None, "Muse billing evidence has no verification timestamp"
         return evidence, None
+
+    def _cli_login_error(self) -> str | None:
+        if self.cli_config_home is None:
+            return "Muse CLI configuration home is required to reuse its login"
+        auth_file = self.cli_config_home / "muse" / "auth.json"
+        try:
+            if auth_file.is_symlink() or not auth_file.is_file() or auth_file.stat().st_mode & 0o077:
+                return "Muse CLI auth metadata must be a regular file with permissions 0600"
+            if auth_file.stat().st_size > MAX_BILLING_EVIDENCE_BYTES:
+                return "Muse CLI auth metadata is too large"
+            raw = json.loads(auth_file.read_text(encoding="utf-8"))
+            provider = raw["providers"]["meta"]
+            if provider.get("mechanism") != "oauth":
+                return "Reusing Muse CLI login requires Meta OAuth authentication"
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return "Muse CLI OAuth login metadata is unavailable"
+        return None
 
     def child_env(self) -> dict[str, str]:
         if self.profile_root is None:
@@ -241,6 +269,13 @@ class MuseConfig:
             "TBH_DISABLE_TELEMETRY": "1",
             "MUSE_EXPERIMENTAL_SDK_ENABLED": "on",
         }
+        if self.reuse_cli_login:
+            # Keychain lookup needs the real user home; session data stays isolated.
+            env["HOME"] = str(Path.home())
+            env["XDG_DATA_HOME"] = str(self.profile_root.resolve())
+            if self.cli_config_home is not None:
+                env["XDG_CONFIG_HOME"] = str(self.cli_config_home.resolve())
+            env.pop("TBH_CREDENTIAL_BACKEND")
         for name in ("LANG", "LC_ALL", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS"):
             value = os.getenv(name)
             if value:

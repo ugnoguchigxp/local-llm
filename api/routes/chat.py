@@ -9,6 +9,8 @@ from typing import Any, AsyncGenerator
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
+from api.commandcode_proxy import proxy_commandcode
+from api.local_inference import require_local_inference
 from api.schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -26,6 +28,7 @@ from core.provider_profiles import sanitize_for_profile
 from core.context_budget import ContextBudgetExceeded
 from core.daemon import DaemonBusyError, get_local_llm_daemon
 from core.tool_calling import normalize_tool_name, parse_tool_call, sanitize_assistant_text
+from core.commandcode_provider import is_commandcode_model
 
 router = APIRouter(tags=["chat"])
 
@@ -145,6 +148,15 @@ def _required_tool_missing_detail() -> dict[str, str]:
 
 @router.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def chat_completions(request: ChatCompletionRequest):
+    if is_commandcode_model(request.model):
+        payload = request.model_dump(mode="json", exclude_none=True)
+        return await proxy_commandcode(
+            "chat/completions",
+            payload,
+            stream=request.stream,
+        )
+
+    require_local_inference()
     daemon = get_local_llm_daemon()
     manager = daemon.manager
 

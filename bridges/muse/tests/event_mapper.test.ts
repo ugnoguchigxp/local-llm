@@ -71,11 +71,14 @@ test("approval event omits rawArgs", () => {
     viewCursor: "c1",
     approvalId: "a1",
     rawArgs: "secret command",
-    availableChoices: [{ choiceId: "once", decision: "approved", scope: "once" }],
+    availableChoices: [
+      { choiceId: "once", decision: "approved", scope: "once" },
+      { choiceId: "reject", decision: "abort", scope: "once" },
+    ],
   });
   assert.equal(event?.type, "approval.requested");
   assert.equal("rawArgs" in (event?.data ?? {}), false);
-  assert.deepEqual(event?.data["available_choices"], ["allow_once"]);
+  assert.deepEqual(event?.data["available_choices"], ["allow_once", "deny"]);
 });
 
 test("maps server-request interaction methods", () => {

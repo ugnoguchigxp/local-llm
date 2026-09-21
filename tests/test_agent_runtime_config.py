@@ -22,6 +22,8 @@ def _configure(monkeypatch, tmp_path: Path) -> tuple[Path, Path]:
     monkeypatch.setenv("LOCAL_LLM_MUSE_ALLOWED_MODELS", "model-a")
     monkeypatch.setenv("LOCAL_LLM_MUSE_SCHEMA_FINGERPRINT", "sha256:test")
     monkeypatch.setenv("LOCAL_LLM_MUSE_APPROVAL_MODE", "onRequest")
+    monkeypatch.setenv("LOCAL_LLM_MUSE_REUSE_CLI_LOGIN", "false")
+    monkeypatch.delenv("LOCAL_LLM_MUSE_CLI_CONFIG_HOME", raising=False)
     return profile, evidence
 
 
@@ -88,6 +90,31 @@ def test_child_environment_does_not_inherit_payg_keys(monkeypatch, tmp_path):
     assert child["HOME"] == str(profile.resolve())
     assert "OPENAI_API_KEY" not in child
     assert "ANTHROPIC_API_KEY" not in child
+
+
+def test_reused_cli_login_keeps_keychain_home_and_isolates_session_data(monkeypatch, tmp_path):
+    profile, _evidence = _configure(monkeypatch, tmp_path)
+    cli_config = tmp_path / "cli-config"
+    (cli_config / "muse").mkdir(parents=True)
+    auth = cli_config / "muse" / "auth.json"
+    auth.write_text(json.dumps({"providers": {"meta": {"mechanism": "oauth", "storage": "keychain"}}}))
+    auth.chmod(0o600)
+    monkeypatch.setenv("LOCAL_LLM_MUSE_REUSE_CLI_LOGIN", "true")
+    monkeypatch.setenv("LOCAL_LLM_MUSE_CLI_CONFIG_HOME", str(cli_config))
+    monkeypatch.setenv("META_API_KEY", "must-not-leak")
+    monkeypatch.setenv("TBH_CREDENTIAL_BACKEND", "file")
+    config = MuseConfig.from_env(repo_root=tmp_path)
+
+    child = config.child_env()
+
+    assert child["HOME"] == str(Path.home())
+    assert child["XDG_CONFIG_HOME"] == str(cli_config)
+    assert child["XDG_DATA_HOME"] == str(profile)
+    assert "META_API_KEY" not in child
+    assert "TBH_CREDENTIAL_BACKEND" not in child
+    assert config._cli_login_error() is None
+    auth.write_text(json.dumps({"providers": {"meta": {"mechanism": "api_key"}}}))
+    assert "OAuth" in config._cli_login_error()
 
 
 def test_approval_timeout_is_positive_and_defaults_safely(monkeypatch, tmp_path):

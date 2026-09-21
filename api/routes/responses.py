@@ -9,11 +9,15 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from api.commandcode_proxy import proxy_commandcode
+from api.local_inference import require_local_inference
+
 from api.tool_contract import build_tool_retry_message, resolve_tool_choice, validate_tool_arguments
 from core.context_budget import ContextBudgetExceeded
 from core.daemon import DaemonBusyError, get_local_llm_daemon
 from core.provider_profiles import sanitize_for_profile
 from core.tool_calling import normalize_tool_name, parse_tool_call, sanitize_assistant_text
+from core.commandcode_provider import is_commandcode_model
 
 router = APIRouter(tags=["responses"])
 
@@ -216,12 +220,20 @@ def _required_tool_missing_detail() -> dict[str, str]:
 
 
 @router.post("/v1/responses")
-async def create_response(payload: dict[str, Any]) -> dict[str, Any]:
+async def create_response(payload: dict[str, Any]):
+    requested_model_raw = payload.get("model")
+    requested_model = str(requested_model_raw) if requested_model_raw else None
+    if is_commandcode_model(requested_model):
+        return await proxy_commandcode(
+            "responses",
+            payload,
+            stream=payload.get("stream") is True,
+        )
+
+    require_local_inference()
     daemon = get_local_llm_daemon()
     manager = daemon.manager
 
-    requested_model_raw = payload.get("model")
-    requested_model = str(requested_model_raw) if requested_model_raw else None
     try:
         requested_model_path = manager.validate_model(requested_model)
     except ValueError as exc:

@@ -8,6 +8,7 @@ from inspect import Parameter, signature
 from typing import Any, Generator
 
 from core.provider_profiles import combined_stop_sequences, get_provider_profile, profile_metadata
+from core.local_inference import local_inference_enabled
 
 DEFAULT_MODEL_PATH = os.getenv("GEMMA4_MODEL", "mlx-community/gemma-4-e4b-it-4bit")
 DEFAULT_MODEL_ID = os.getenv("GEMMA4_API_MODEL_ID", "gemma-4-e4b-it")
@@ -179,6 +180,8 @@ class MLXModelManager:
         return deduped
 
     def ensure_loaded(self, model_path: str | None = None) -> None:
+        if not local_inference_enabled():
+            raise RuntimeError("local_inference_disabled")
         target_model = model_path or self.default_model_path
         with self._lock:
             if (

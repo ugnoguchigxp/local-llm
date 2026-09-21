@@ -6,6 +6,7 @@ mlx-vlm>=0.6.3
 # OpenAI-compatible API
 fastapi>=0.115.0
 uvicorn>=0.32.0
+httpx>=0.28.1
 
 # MCP SDK
 mcp>=1.0.0

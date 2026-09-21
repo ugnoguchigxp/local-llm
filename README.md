@@ -14,7 +14,9 @@
   - ツール実行
   - エージェントループ
 
-Muse Codeを最初の外部Agent Runtimeとし、将来のGrok系Agent、Qwen系Cloudを含むRuntime Gatewayへ拡張する構想は、[`docs/runtime-gateway-concept.md`](docs/runtime-gateway-concept.md)を参照してください。Museの設計と検証条件は、[`docs/muse-agent-runtime-implementation-plan.md`](docs/muse-agent-runtime-implementation-plan.md)と[`docs/providers/muse.md`](docs/providers/muse.md)にまとめています。Muse Runtimeはdefault disabledであり、既存API契約は変更しません。
+Muse CodeとGrok Buildを外部Agent Runtimeとして扱い、将来はxAI APIやQwen系Cloudも追加できるRuntime Gateway構成です。全体像は[`docs/runtime-gateway-concept.md`](docs/runtime-gateway-concept.md)、Grokの実装と運用は[`docs/grok-agent-runtime-implementation-plan.md`](docs/grok-agent-runtime-implementation-plan.md)と[`docs/providers/grok.md`](docs/providers/grok.md)を参照してください。MuseとGrokはどちらもdefault disabledで、既存のローカルModel API契約には影響しません。
+
+Command Code Provider API経由でDeepSeek V4.1 FlashをOpenAI互換APIとして公開する場合は、[`docs/providers/commandcode.md`](docs/providers/commandcode.md)を参照してください。この経路はdefault disabledで、Command CodeのProvider API権限があるプランを必要とします。
 
 ## 提供エンドポイント
 
@@ -25,7 +27,7 @@ Muse Codeを最初の外部Agent Runtimeとし、将来のGrok系Agent、Qwen系
 - `POST /v1/responses`
 - `GET /v1/agents/runtimes`
 - `GET /v1/agents/models`
-- `/v1/agents/sessions/*`（Muse Runtime有効時）
+- `/v1/agents/sessions/*`（MuseまたはGrok Runtime有効時）
 
 `/v1/chat/completions` は `tool_calls` を返せます。  
 ただし **ツール実行はサーバーでは行いません**。ツール実行は呼び出し元クライアントで行ってください。
@@ -108,6 +110,14 @@ Qwen3 TTS / ASR APIの利用方法は
 を参照してください。
 
 ## launchd 自動スタート制御
+
+Museなどの外部Agent APIを維持し、Ornithなどのローカル推論だけを停止するには、
+`.env` に `LOCAL_INFERENCE_ENABLED=false` を設定してAPIサーバーを再起動します。
+ローカルモデルの事前読み込みとAPI経由の読み込みを禁止し、`/v1/models`、
+`/v1/chat/completions`、`/v1/responses` は503を返します。
+`/v1/agents/*` と独立したembeddingサービスには影響しません。
+`LOCAL_LLM_DAEMON_PRELOAD=false` は事前読み込みだけの停止で、推論の禁止にはなりません。
+Rust版OrnithのLaunchAgentは別管理のため、個別に停止・無効化してください。
 
 LLM API / embedding daemon の自動スタートを一時的に止める場合:
 

@@ -27,6 +27,10 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+export function isDenialDecision(value: unknown): boolean {
+  return value === "denied" || value === "abort";
+}
+
 export function parseBridgeRequest(line: string): BridgeRequest {
   let decoded: unknown;
   try {

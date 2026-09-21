@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from dotenv import load_dotenv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -122,6 +123,7 @@ def start_turn(base_url: str, session_id: str, prompt: str) -> dict[str, Any]:
 
 
 def main() -> int:
+    load_dotenv(REPO_ROOT / ".env")
     parser = argparse.ArgumentParser(description="Opt-in Muse subscription Agent API smoke test.")
     parser.add_argument("--base-url", default=os.getenv("LOCAL_LLM_API_BASE", "http://127.0.0.1:44448"))
     parser.add_argument(
@@ -178,7 +180,7 @@ def main() -> int:
         terminal, cursor = wait_for_terminal(base_url, session_id, cursor)
         active_turn_id = None
         if terminal["type"] != "turn.completed":
-            raise RuntimeError(f"basic turn ended as {terminal['type']}")
+            raise RuntimeError(f"basic turn ended unexpectedly: {json.dumps(terminal, ensure_ascii=False)}")
 
         if args.full:
             active_turn_id = str(

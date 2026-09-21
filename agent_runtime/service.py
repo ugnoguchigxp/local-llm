@@ -20,6 +20,8 @@ from agent_runtime.errors import AgentRuntimeError
 from agent_runtime.events import AgentEvent, CursorCodec, EventBroker, now_millis
 from agent_runtime.muse.config import MuseConfig
 from agent_runtime.muse.runtime import MuseRuntime
+from agent_runtime.grok.config import GrokConfig
+from agent_runtime.grok.runtime import GrokRuntime
 from agent_runtime.registry import RuntimeRegistry
 from agent_runtime.state import AgentStateStore, SessionRecord, TurnRecord
 from agent_runtime.workspaces import WorkspaceManager
@@ -56,6 +58,7 @@ class AgentService:
         registry: RuntimeRegistry,
         state: AgentStateStore | None,
         workspaces: WorkspaceManager,
+        workspace_managers: dict[str, WorkspaceManager] | None = None,
         cursor_codec: CursorCodec,
         broker: EventBroker | None = None,
         initialization_error: str | None = None,
@@ -64,6 +67,7 @@ class AgentService:
         self.catalog = AgentCatalog(registry)
         self.state = state
         self.workspaces = workspaces
+        self.workspace_managers = dict(workspace_managers or {})
         self.cursor_codec = cursor_codec
         self.broker = broker or EventBroker()
         self.initialization_error = initialization_error
@@ -81,8 +85,9 @@ class AgentService:
         statuses = [_runtime_status_dict(await runtime.status()) for runtime in self.registry.all()]
         if self.initialization_error:
             for status in statuses:
-                status["status"] = "degraded"
-                status["detail"] = self.initialization_error
+                if status["status"] != "disabled":
+                    status["status"] = "degraded"
+                    status["detail"] = self.initialization_error
         return statuses
 
     async def preflight(self, runtime_id: str) -> dict[str, Any]:
@@ -163,7 +168,7 @@ class AgentService:
                     status="pending",
                 )
 
-            workspace = self.workspaces.create_isolated(gateway_session_id)
+            workspace = self._workspace_manager(runtime_id).create_isolated(gateway_session_id)
             native = await runtime.start_session(
                 workspace_root=str(workspace),
                 model_id=model.native_model_id,
@@ -210,6 +215,7 @@ class AgentService:
                 scope=scope,
                 key=idempotency_key,
             )
+            await self.broker.mark_history_start(gateway_session_id, native.view_cursor)
             await self._drain_pending_events(runtime_id, native.session_id)
             return self._session_dict(state.get_session(gateway_session_id) or record)
 
@@ -278,6 +284,9 @@ class AgentService:
                     native_session_id=record.native_session_id,
                     cursor=record.last_native_cursor,
                     command_id=command_id,
+                    workspace_root=record.workspace_path,
+                    model_id=record.native_model_id,
+                    provider_id=record.provider_id,
                 )
                 session_changed = native.session_id != record.native_session_id
                 model_changed = native.model_id != record.native_model_id
@@ -296,11 +305,14 @@ class AgentService:
                     resumed_cursor=native.view_cursor,
                 )
                 self._resuming_native_sessions.discard(native_key)
-                for missed in await runtime.page_events(
-                    native_session_id=record.native_session_id,
-                    cursor=record.last_native_cursor,
-                ):
-                    await self._on_native_event(missed)
+                # Released sessions have no active turn to catch up. Resume from the
+                # new provider head: live delta cursors may not survive unsubscribe.
+                if record.status != "released" and native.view_cursor != record.last_native_cursor:
+                    for missed in await runtime.page_events(
+                        native_session_id=record.native_session_id,
+                        cursor=record.last_native_cursor,
+                    ):
+                        await self._on_native_event(missed)
                 await self._drain_pending_events(record.runtime_id, record.native_session_id)
                 state.complete_idempotency(scope, idempotency_key)
             except BaseException:
@@ -649,12 +661,12 @@ class AgentService:
             session.initial_native_cursor,
         )
         runtime = self.registry.get(session.runtime_id)
-        if native_after is None or native_after == session.initial_native_cursor:
-            page_from = session.initial_native_cursor
-        elif not found:
-            page_from = native_after
-        else:
+        if found:
             page_from = None
+        elif native_after is None or native_after == session.initial_native_cursor:
+            page_from = session.initial_native_cursor
+        else:
+            page_from = native_after
         replay: list[NativeEvent] = []
         if page_from is not None:
             try:
@@ -960,9 +972,8 @@ class AgentService:
         if self.state is None:
             raise AgentRuntimeError(
                 code="runtime_unavailable",
-                message="Agent Runtime state is unavailable while Muse is disabled.",
+                message="Agent Runtime state is unavailable while all runtimes are disabled.",
                 status_code=503,
-                runtime="muse",
             )
         return self.state
 
@@ -977,7 +988,7 @@ class AgentService:
 
     def _validate_session_invariants(self, record: SessionRecord) -> None:
         try:
-            self.workspaces.validate_isolated(
+            self._workspace_manager(record.runtime_id).validate_isolated(
                 record.gateway_session_id,
                 record.workspace_path,
             )
@@ -985,6 +996,9 @@ class AgentService:
             if exc.runtime is None:
                 exc.runtime = record.runtime_id
             raise
+
+    def _workspace_manager(self, runtime_id: str) -> WorkspaceManager:
+        return self.workspace_managers.get(runtime_id, self.workspaces)
 
     async def close(self) -> None:
         state, self.state = self.state, None
@@ -995,18 +1009,32 @@ class AgentService:
                 state.close()
 
 
-def build_agent_service(config: MuseConfig | None = None) -> AgentService:
+def build_agent_service(
+    config: MuseConfig | None = None,
+    grok_config: GrokConfig | None = None,
+) -> AgentService:
     muse_config = config or MuseConfig.from_env()
-    runtime = MuseRuntime(muse_config)
-    registry = RuntimeRegistry([runtime])
+    grok_settings = grok_config or GrokConfig.from_env()
+    runtimes = [MuseRuntime(muse_config), GrokRuntime(grok_settings)]
+    registry = RuntimeRegistry(runtimes)
     state: AgentStateStore | None = None
     initialization_error: str | None = None
     secret = secrets.token_bytes(32)
-    if muse_config.enabled:
+    enabled_configs = [
+        (runtime_id, item)
+        for runtime_id, item in (("muse", muse_config), ("grok", grok_settings))
+        if item.enabled
+    ]
+    if enabled_configs:
         try:
-            state = AgentStateStore(muse_config.state_db)
-            state.mark_sessions_for_recovery("muse")
-            secret = _load_cursor_secret(muse_config.cursor_secret_file)
+            state_paths = {item.state_db.resolve() for _, item in enabled_configs}
+            secret_paths = {item.cursor_secret_file.resolve() for _, item in enabled_configs}
+            if len(state_paths) != 1 or len(secret_paths) != 1:
+                raise RuntimeError("enabled Agent Runtimes must share state and cursor files")
+            state = AgentStateStore(enabled_configs[0][1].state_db)
+            for runtime_id, _item in enabled_configs:
+                state.mark_sessions_for_recovery(runtime_id)
+            secret = _load_cursor_secret(enabled_configs[0][1].cursor_secret_file)
         except (OSError, RuntimeError, sqlite3.DatabaseError) as exc:
             if state is not None:
                 state.close()
@@ -1016,6 +1044,10 @@ def build_agent_service(config: MuseConfig | None = None) -> AgentService:
         registry=registry,
         state=state,
         workspaces=WorkspaceManager(muse_config.workspace_root),
+        workspace_managers={
+            "muse": WorkspaceManager(muse_config.workspace_root),
+            "grok": WorkspaceManager(grok_settings.workspace_root),
+        },
         cursor_codec=CursorCodec(secret),
         initialization_error=initialization_error,
     )
@@ -1106,6 +1138,12 @@ def _runtime_status_dict(status: Any) -> dict[str, Any]:
         "billing_mode": status.billing_mode,
         "auth": status.auth,
         "protocol_fingerprint": status.protocol_fingerprint,
+        "protocol": {
+            "name": status.protocol_name,
+            "version": status.protocol_version,
+        },
+        "host_version": status.host_version,
+        "billing_assurance": status.billing_assurance,
         "active_sessions": status.active_sessions,
         "active_turns": status.active_turns,
         "detail": status.detail,

@@ -1,15 +1,16 @@
 # local-llm Runtime Gateway コンセプト
 
 作成日: 2026-09-06
-状態: 採用済み / Muse Gateway実装済み（実subscription検証待ち）
+状態: 採用済み / Muse・Grok Gateway実装済み（実subscription検証待ち）
 
 Muse向けの具体的な変更順序と検証条件は、[Muse Agent Runtime 実装計画](muse-agent-runtime-implementation-plan.md)を参照する。
+Grok向けは、[Grok Build Agent Runtime 実装計画](grok-agent-runtime-implementation-plan.md)を参照する。
 
 ## 1. この文書の目的
 
 `local-llm` を、既存のローカル推論を壊さずに、定額サブスクリプションで利用できる外部AI実行環境へ接続できるローカルGatewayへ発展させる。
 
-最初に実装する外部Runtimeは **Muse Code** とする。将来は、同じ構造のAgent RuntimeとしてGrok系、Raw Model RuntimeとしてQwen系クラウドを追加できる形にする。
+最初に実装する外部Runtimeは **Muse Code** とする。2つ目は、公式ACPを提供するGrok BuildをAgent Runtimeとして追加する。将来は、xAIやQwen系クラウドをRaw Model Runtimeとして追加できる形にする。
 
 ただし、将来のProviderを想像して巨大な共通抽象を先に作ることはしない。Museで実際に確認できた契約を最初の基準とし、2つ目の実装を追加する時点で共通部分を確定する。
 
@@ -25,7 +26,8 @@ Muse向けの具体的な変更順序と検証条件は、[Muse Agent Runtime �
 | --- | --- | --- | --- |
 | Local Qwen / Gemma等 | Model API | 既存local daemon | 提供済み |
 | Muse Code | Agent API | 公式SDK / MSP | 最初に実装 |
-| Grok系Agent | Agent API | 正式提供されるAgent protocol | Muse安定後 |
+| Grok Build | Agent API | 公式Agent Client Protocol | Muse安定後 |
+| xAI Inference API | Model API | 公式Responses / Chat Completions API | Grok Build安定後・任意 |
 | Qwen系Cloud | Model API | 正式なsubscription API | Muse安定後 |
 
 GrokやQwenを「Museのfallback」として固定するのではなく、それぞれ独立したRuntimeとして登録する。どのRuntimeを選ぶか、quota超過後に何へ切り替えるかは、原則としてSAAA、ContextStill、NightWorkersなどの上位アプリが判断する。
@@ -38,13 +40,14 @@ GrokやQwenを「Museのfallback」として固定するのではなく、それ
 4. subscription利用を機械的に確認できない状態では、外部Runtimeを利用可能にしない。
 5. workspace、approval、user input、cancel、resumeをAgent Runtimeの中核契約に含める。
 6. 既存のlocal model IDとAPI契約は維持する。
-7. GrokとQwenは完成形に含めるが、Museの初回実装には含めない。
+7. Grok BuildとQwenは完成形に含めるが、Museの初回実装には含めない。
+8. Grok Buildのsubscription Agent Runtimeと、API creditsを使うxAI Model Runtimeを分離する。
 
 ## 4. なぜAPIを2つの実行面に分けるのか
 
-ローカルモデルやOpenAI互換のQwen系クラウドは、基本的に入力からモデル出力を得る **Model Runtime** である。tool callを返すことはあっても、toolの実行とAgent Loopは呼び出し元が管理する。
+ローカルモデル、xAI Inference API、OpenAI互換のQwen系クラウドは、基本的に入力からモデル出力を得る **Model Runtime** である。server-side toolを持つ場合でも、ローカルworkspaceの操作、permission、Agent Loop全体をGatewayへ提供するわけではない。
 
-Muse Codeや将来のGrok系Agentは、session、tool execution、approval、途中イベント、再開を持つ **Agent Runtime** である。単純なtext-in/text-outへ変換すると、重要な状態や安全機構が失われる。
+Muse CodeとGrok Buildは、session、tool execution、approval、途中イベント、再開を持つ **Agent Runtime** である。単純なtext-in/text-outへ変換すると、重要な状態や安全機構が失われる。
 
 したがって、最終構造を次のように分ける。
 
@@ -58,13 +61,12 @@ Muse Codeや将来のGrok系Agentは、session、tool execution、approval、途
              │                                   │
      ModelRuntimeRegistry                AgentRuntimeRegistry
              │                                   │
-      ┌──────┴──────┐                     ┌──────┴──────┐
-      │             │                     │             │
- Local Model    Qwen Cloud              Muse          Grok
-  existing        future                first         future
-      │             │                     │             │
- local daemon   official API          SDK / MSP    official agent
-                                                    protocol only
+      ┌──────┼──────┐                     ┌──────┴──────┐
+      │      │      │                     │             │
+ Local Model xAI API Qwen Cloud         Muse       Grok Build
+  existing   future   future             first       next
+      │      │      │                     │             │
+ local daemon REST  official API       SDK / MSP  CLI / ACP
 ```
 
 この分離により、NightWorkersなどが自分でAgent Loopを持つ場合はModel APIを使い、作業全体を外部Agentへ委譲する場合はAgent APIを使える。
@@ -76,6 +78,7 @@ Muse Codeや将来のGrok系Agentは、session、tool execution、approval、途
 対象:
 
 - 既存のローカルモデル
+- 将来のxAI Inference API
 - 将来のQwen系subscription API
 - 将来追加される正式なRaw Model API
 
@@ -114,7 +117,7 @@ class ModelRuntime(Protocol):
 対象:
 
 - Muse Code
-- 将来のGrok系Agent
+- Grok Build
 - 将来追加される正式なsession型Agent Runtime
 
 責務:
@@ -145,7 +148,7 @@ class AgentRuntime(Protocol):
     async def close(self): ...
 ```
 
-Muse固有のMSP frameやGrok固有のprotocol objectは、この境界の外へ漏らさない。一方で、共通形式に変換できない情報を黙って捨てないよう、redact済みの`provider_metadata`を任意で保持できるようにする。
+Muse固有のMSP frameやGrok BuildのACP objectは、この境界の外へ漏らさない。一方で、共通形式に変換できない情報を黙って捨てないよう、redact済みの`provider_metadata`を任意で保持できるようにする。
 
 ## 6. 共通化するものと、共通化しないもの
 
@@ -200,8 +203,10 @@ Agent API:
 
 ```text
 muse/<native-model-id>
-grok/<native-agent-or-model-id>
+grok/<native-model-id>
 ```
+
+将来のxAI Model RuntimeはAgent Runtimeとcredential・課金経路を混同しないよう、`xai/<native-model-id>`とする。
 
 既存のprefixなしlocal model IDは後方互換のaliasとして維持する。
 
@@ -512,6 +517,7 @@ agent_runtime/
 
 model_runtime/
 ├── local.py
+├── xai/
 └── qwencloud/
 ```
 
@@ -577,7 +583,7 @@ subscription経路を確認できなければ、以降へ進まない。
 
 ### Phase 5: 2つ目以降のRuntime
 
-1. Grok系の正式なAgent protocolとsubscription利用条件を確認する。
+1. Grok Buildの公式ACPとsubscription利用条件を実機確認する。
 2. Museとの差分を基に`AgentRuntime`契約を必要最小限だけ修正する。
 3. Qwen系の正式なsubscription APIとPAYG分離を確認する。
 4. Qwen実装時に`ModelRuntime`と既存local adapterを確定する。

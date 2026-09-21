@@ -23,7 +23,7 @@ Muse Code subscriptionを、`local-llm`の最初の外部Agent Runtimeとして�
 - Agent Runtime、session store、Agent APIは存在しない。
 - root `package.json`はlaunchd操作用scriptだけを持ち、Node依存はまだない。
 - Node.js `v24.11.1`、pnpm `10.24.0`を利用可能。
-- `@muse-code/sdk`の公開最新版は確認時点で`0.1.1`。
+- `@muse-code/sdk`はMuse Code 1.3.0と同じ`1.3.0`へ固定する。
 - `muse` binaryは未インストール。
 - 既存の主要API関連テスト48件は成功済み。root `tests/`には57件のtest functionがある。
 - worktreeには本計画と無関係な既存変更があるため、それらへ触れない。

@@ -91,7 +91,7 @@ class FakeRuntime:
             await self.handler(self.emit_during_resume)
         return NativeSession(
             self.resume_session_id or kwargs["native_session_id"],
-            "c9",
+            getattr(self, "resume_cursor", "c9"),
             "idle",
             "model-a",
             "provider-a",
@@ -528,6 +528,8 @@ async def _failed_event_replay_leaves_resumed_session_in_recovery(tmp_path):
         idempotency_key="session-key",
     )
     await service.release_session(session["id"], "release-key")
+    assert service.state is not None
+    service.state.update_session(session["id"], status="recovery_required")
     runtime.page_error = AgentRuntimeError(
         code="provider_host_exited",
         message="paging failed",
@@ -667,12 +669,62 @@ async def _replayed_provider_events_update_persisted_session_state(tmp_path):
         )
     ]
 
-    iterator = await service.prepare_event_stream(session["id"], session["cursor"])
+    missing_cursor = service.cursor_codec.encode(
+        session_id=session["id"], runtime_id="muse", native_cursor="missing-from-live-cache",
+    )
+    iterator = await service.prepare_event_stream(session["id"], missing_cursor)
     completed = await anext(iterator)
 
     assert completed is not None and completed.type == "turn.completed"
     assert completed.turn_id == turn["id"]
     assert service.get_session(session["id"])["status"] == "idle"
+    await iterator.aclose()
+    await service.close()
+
+
+def test_initial_live_stream_does_not_replay_an_incomplete_running_turn(tmp_path):
+    asyncio.run(_initial_live_stream_does_not_replay_an_incomplete_running_turn(tmp_path))
+
+
+def test_released_session_resumes_from_the_new_provider_head(tmp_path):
+    async def check():
+        service, runtime = build_service(tmp_path)
+        session = await service.create_session(
+            runtime_id="muse", public_model_id="muse/model-a",
+            approval_policy="strict", idempotency_key="session-key",
+        )
+        await service.release_session(session["id"], "release-key")
+        runtime.resume_cursor = "new-provider-head"
+        runtime.page_error = AssertionError("a released session resumes from its new head")
+        resumed = await service.resume_session(session["id"], "resume-key")
+        assert resumed["status"] == "idle"
+        assert service.cursor_codec.decode(
+            resumed["cursor"], session_id=session["id"], runtime_id="muse",
+        ) == "new-provider-head"
+        await service.close()
+    asyncio.run(check())
+
+
+async def _initial_live_stream_does_not_replay_an_incomplete_running_turn(tmp_path):
+    service, runtime = build_service(tmp_path)
+    session = await service.create_session(
+        runtime_id="muse", public_model_id="muse/model-a",
+        approval_policy="strict", idempotency_key="session-key",
+    )
+    await service.start_turn(session_id=session["id"], text="hello", idempotency_key="turn-key")
+    runtime.page = [NativeEvent(
+        "muse", "turn.failed", "native-session", "native-turn", "c2",
+        {"terminal": "failed", "reason": "incomplete"},
+    )]
+    iterator = await service.prepare_event_stream(session["id"], session["cursor"])
+    started = await anext(iterator)
+    assert started is not None and started.type == "turn.started"
+    assert service.get_session(session["id"])["status"] == "running"
+    await runtime.emit(NativeEvent(
+        "muse", "turn.completed", "native-session", "native-turn", "c3", {"terminal": "completed"},
+    ))
+    completed = await anext(iterator)
+    assert completed is not None and completed.type == "turn.completed"
     await iterator.aclose()
     await service.close()
 
@@ -778,6 +830,7 @@ async def _event_stream_preflight_marks_unloaded_session_for_recovery(tmp_path):
         status_code=409,
         runtime="muse",
     )
+    await service.broker.discard_history(session["id"])
 
     with pytest.raises(AgentRuntimeError) as raised:
         await service.prepare_event_stream(session["id"], session["cursor"])

@@ -12,6 +12,10 @@ class RuntimeStatus:
     billing_mode: str = "unknown"
     auth: str = "unknown"
     protocol_fingerprint: str | None = None
+    protocol_name: str | None = None
+    protocol_version: str | None = None
+    host_version: str | None = None
+    billing_assurance: str = "unverified"
     active_sessions: int = 0
     active_turns: int = 0
     detail: str | None = None
@@ -85,6 +89,9 @@ class AgentRuntime(Protocol):
         native_session_id: str,
         cursor: str | None,
         command_id: str,
+        workspace_root: str | None = None,
+        model_id: str | None = None,
+        provider_id: str | None = None,
     ) -> NativeSession: ...
 
     async def release_session(self, *, native_session_id: str) -> None: ...

@@ -121,6 +121,17 @@ def test_event_protocol_errors_are_classified_as_protocol_mismatch():
     assert raised.value.code == "runtime_protocol_mismatch"
 
 
+def test_empty_initial_cursor_is_valid_but_non_string_cursor_is_not():
+    from agent_runtime.muse.runtime import _native_session
+
+    session = {"native_session_id": "new-session", "view_cursor": "", "status": "idle"}
+    assert _native_session(session, "session.start").view_cursor == ""
+    runtime = MuseRuntime(config=cast(MuseConfig, None))
+    assert runtime._native_event(event("")).native_cursor == ""
+    with pytest.raises(AgentRuntimeError):
+        _native_session({**session, "view_cursor": None}, "session.start")
+
+
 def test_active_turn_tracking_is_scoped_to_session():
     runtime = MuseRuntime(config=cast(MuseConfig, None))
     first = NativeEvent("muse", "turn.started", "session-a", "turn-1", "c1", {})
@@ -154,7 +165,7 @@ def test_turn_start_rejects_queued_or_steered_dispositions():
 def test_initialize_requires_exact_bridge_contract_and_durable_sessions():
     valid = {
         "bridge_protocol": 1,
-        "sdk_version": "0.1.1",
+        "sdk_version": "1.3.0",
         "schema_fingerprint": "sha256:test",
         "session_durability": "durable",
     }
