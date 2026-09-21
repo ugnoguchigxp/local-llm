@@ -515,6 +515,28 @@ async def _resume_rejects_changed_native_session_identity(tmp_path):
     await service.close()
 
 
+def test_release_recovery_session_unloads_native_session(tmp_path):
+    asyncio.run(_release_recovery_session_unloads_native_session(tmp_path))
+
+
+async def _release_recovery_session_unloads_native_session(tmp_path):
+    service, runtime = build_service(tmp_path)
+    session = await service.create_session(
+        runtime_id="muse",
+        public_model_id="muse/model-a",
+        approval_policy="strict",
+        idempotency_key="session-key",
+    )
+    assert service.state is not None
+    service.state.update_session(session["id"], status="recovery_required")
+
+    released = await service.release_session(session["id"], "release-key")
+
+    assert released["status"] == "released"
+    assert "native-session" in runtime.released
+    await service.close()
+
+
 def test_failed_event_replay_leaves_resumed_session_in_recovery(tmp_path):
     asyncio.run(_failed_event_replay_leaves_resumed_session_in_recovery(tmp_path))
 

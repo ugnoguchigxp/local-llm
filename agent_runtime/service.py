@@ -359,7 +359,7 @@ class AgentService:
                     command_id=command_id,
                     status="pending",
                 )
-            if record.status not in {"released", "recovery_required"}:
+            if record.status != "released":
                 try:
                     await self.registry.get(record.runtime_id).release_session(
                         native_session_id=record.native_session_id

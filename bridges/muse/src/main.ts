@@ -340,16 +340,24 @@ async function dispatch(method: string, params: Record<string, unknown>): Promis
   if (method === "session.start") {
     rejectUnknownFields(params, ["workspace_root", "model_id", "provider_id", "approval_mode", "command_id"], method);
     const commandId = requireString(params, "command_id", method);
-    const result = await connection.command(
-      "session/start",
-      {
-        workspaceRoot: requireString(params, "workspace_root", method),
-        modelId: requireString(params, "model_id", method),
-        providerId: requireString(params, "provider_id", method),
-        approvalMode: requireString(params, "approval_mode", method),
-      },
-      { commandId, maxAttempts: 1 },
-    );
+    const approvalMode = requireString(params, "approval_mode", method);
+    mapper.expectApprovalModeChange(commandId, approvalMode);
+    let result: Record<string, unknown>;
+    try {
+      result = await connection.command(
+        "session/start",
+        {
+          workspaceRoot: requireString(params, "workspace_root", method),
+          modelId: requireString(params, "model_id", method),
+          providerId: requireString(params, "provider_id", method),
+          approvalMode,
+        },
+        { commandId, maxAttempts: 1 },
+      );
+    } catch (error) {
+      mapper.cancelExpectedApprovalModeChange(commandId);
+      throw error;
+    }
     return sessionResult(result, commandId);
   }
   if (method === "session.resume") {

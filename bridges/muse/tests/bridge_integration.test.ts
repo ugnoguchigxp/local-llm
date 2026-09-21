@@ -92,6 +92,10 @@ test("bridge drives the official SDK against an MSP host", async (context) => {
   });
   assert.equal(session.result?.["native_session_id"], "native-session");
   assert.equal(session.result?.["view_cursor"], "");
+  const approvalModeAudit = frames.find(
+    (frame) => frame.type === "provider.event" && frame.data?.["method"] === "session/approvalModeChanged",
+  );
+  assert.notEqual(approvalModeAudit, undefined);
   const resumed = await request("session.resume", {
     native_session_id: "native-session",
     cursor: "c0",
@@ -216,6 +220,7 @@ for await (const line of input) {
     continue;
   }
   if (frame.method === "session/start") {
+    send({ jsonrpc: "2.0", method: "session/approvalModeChanged", params: { sessionId: "native-session", viewCursor: "c-start", commandId: frame.params.commandId, mode: frame.params.approvalMode, source: "startup", clientName: "local_llm_muse_bridge", sourceRange: { first: 1, last: 1 } } });
     send({ jsonrpc: "2.0", id: frame.id, result: { session: { sessionId: "native-session", status: "idle", modelId: "model-a", providerId: "provider-a" }, viewCursor: "" }});
     continue;
   }

@@ -13,6 +13,8 @@ from core.model import MLXModelManager
 ])
 def test_disabled_routes_never_reach_model(monkeypatch, method, path, body):
     monkeypatch.setenv("LOCAL_INFERENCE_ENABLED", "false")
+    monkeypatch.setenv("LOCAL_LLM_COMMANDCODE_ENABLED", "false")
+
     def unexpected():
         raise AssertionError("Disabled route reached the daemon")
     monkeypatch.setattr("api.routes.chat.get_local_llm_daemon", unexpected)

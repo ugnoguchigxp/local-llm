@@ -159,3 +159,50 @@ test("maps delivery gaps and invariant changes to recovery events", () => {
   assert.equal(gap?.data["next_cursor"], "next-cursor");
   assert.equal(changed?.type, "session.invariant_changed");
 });
+
+test("keeps approval-mode audit events distinct from later reconfiguration", () => {
+  const mapper = new EventMapper();
+  mapper.expectApprovalModeChange("cmd-start", "onRequest");
+  const startup = mapper.map("session/approvalModeChanged", {
+    sessionId: "s1",
+    viewCursor: "c1",
+    commandId: "cmd-start",
+    mode: "onRequest",
+    source: "startup",
+  });
+  const replay = mapper.map("session/approvalModeChanged", {
+    sessionId: "s1",
+    viewCursor: "c2",
+    commandId: "cmd-start",
+    mode: "onRequest",
+    source: "replay",
+  });
+  const changed = mapper.map("session/approvalModeChanged", {
+    sessionId: "s1",
+    viewCursor: "c3",
+    commandId: "cmd-change",
+    mode: "never",
+    source: "approvalReconfigure",
+  });
+
+  assert.equal(startup?.type, "provider.event");
+  assert.equal(startup?.data["method"], "session/approvalModeChanged");
+  assert.equal(replay?.type, "provider.event");
+  assert.equal(changed?.type, "session.invariant_changed");
+  assert.equal(changed?.data["reason"], "approval_mode_changed");
+});
+
+test("fails closed when a startup approval-mode audit does not match the command", () => {
+  const mapper = new EventMapper();
+  mapper.expectApprovalModeChange("cmd-start", "onRequest");
+
+  const changed = mapper.map("session/approvalModeChanged", {
+    sessionId: "s1",
+    viewCursor: "c1",
+    commandId: "cmd-start",
+    mode: "never",
+    source: "startup",
+  });
+
+  assert.equal(changed?.type, "session.invariant_changed");
+});

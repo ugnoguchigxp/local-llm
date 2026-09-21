@@ -82,6 +82,15 @@ export interface BridgeEvent {
 export class EventMapper {
   readonly #itemKinds = new Map<string, string>();
   readonly #itemTurns = new Map<string, string>();
+  readonly #expectedApprovalModes = new Map<string, string>();
+
+  expectApprovalModeChange(commandId: string, mode: string): void {
+    setBounded(this.#expectedApprovalModes, commandId, mode);
+  }
+
+  cancelExpectedApprovalModeChange(commandId: string): void {
+    this.#expectedApprovalModes.delete(commandId);
+  }
 
   map(method: string, params: unknown): BridgeEvent | undefined {
     if (!isRecord(params)) return undefined;
@@ -252,10 +261,29 @@ export class EventMapper {
         },
       };
     }
-    if (method === "session/modelChanged" || method === "session/approvalModeChanged") {
+    if (method === "session/approvalModeChanged") {
+      // Muse emits a durable audit event for the initial approval mode and
+      // when replaying it. Match startup by command and value because released
+      // hosts have used more than one source label for this notification.
+      const commandId = params["commandId"];
+      const mode = params["mode"];
+      const isExpectedStartup =
+        typeof commandId === "string" &&
+        typeof mode === "string" &&
+        this.#expectedApprovalModes.get(commandId) === mode;
+      if (isExpectedStartup) this.#expectedApprovalModes.delete(commandId);
+      if (isExpectedStartup || params["source"] === "replay") {
+        return { type: "provider.event", data: { method } };
+      }
       return {
         type: "session.invariant_changed",
-        data: { reason: method === "session/modelChanged" ? "model_changed" : "approval_mode_changed" },
+        data: { reason: "approval_mode_changed" },
+      };
+    }
+    if (method === "session/modelChanged") {
+      return {
+        type: "session.invariant_changed",
+        data: { reason: "model_changed" },
       };
     }
     return { type: "provider.event", data: { method } };
